@@ -8,7 +8,7 @@
  *  - subagent reconciliation + matched-lighting via the @minhduydev/pi-subagents
  *    eventbus (parent owns artifacts; subagents never write TODO.md)
  *  - the optional bounded widget (oh-my-pi walking-viewport + pi-tasks
- *    crash-safe render), opt-in via settings.json `pi-todo.widget`
+ *    crash-safe render), on by default; disable via settings.json `pi-todo.widget: false`
  *
  * Declared in package.json: `"pi": { "extensions": ["./src/index.ts"] }`.
  */

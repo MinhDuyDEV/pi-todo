@@ -109,7 +109,7 @@ export const DEFAULT_SETTINGS: Required<PiTodoSettings> = {
   todoFile: ".pi/artifacts/TODO.md",
   reminderTurns: 6,
   reminderTurnsActive: 3,
-  widget: false,
+  widget: true,
   widgetPlacement: "belowEditor",
   widgetItemsPerPhase: 5,
   reconcileSubagents: true,

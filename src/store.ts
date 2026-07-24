@@ -30,12 +30,15 @@ import {
   abandonItem,
   addItem,
   blockItem,
-  completeItem,
+  completeRef,
+  completePhase,
   editItem,
+  findPhase,
   moveItem,
   normalizeDoc,
   promoteNext,
   removeItem,
+  resolveRef,
   setItemStatus,
   startItem,
   unblockItem,
@@ -198,7 +201,14 @@ export class TodoStore {
     return this.apply((p) => setItemStatus(p, ref, status, note));
   }
   async done(ref: string): Promise<ApplyResult> {
-    return this.apply((p) => completeItem(p, ref), { autoPromote: true });
+    const phases = this.get().phases;
+      // A phase ref closes the whole phase and promotes only the next active phase
+      // (preserving the single-active-task invariant); an item ref keeps the existing
+      // same-phase + cross-phase auto-promote behavior.
+      if (!resolveRef(phases, ref) && findPhase(phases, ref)) {
+        return this.apply((p) => completePhase(p, ref), { autoPromote: false });
+      }
+      return this.apply((p) => completeRef(p, ref), { autoPromote: true });
   }
   async drop(ref: string): Promise<ApplyResult> {
     return this.apply((p) => abandonItem(p, ref), { autoPromote: true });

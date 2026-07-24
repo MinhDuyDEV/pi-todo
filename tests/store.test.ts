@@ -158,3 +158,91 @@ test("readSync: ENOENT → empty; non-file (EISDIR) throws (does not clobber)", 
   assert.throws(() => sDir.readSync(), /not a regular file/);
   rmSync(dir, { recursive: true, force: true });
 });
+
+const MULTIPHASE = `### 2026-01-01 - Alpha
+status: active
+
+- [ ] a1
+- [/] a2
+- [x] a3
+
+### 2026-01-02 - Beta
+status: active
+
+- [ ] b1
+- [ ] b2
+
+### 2026-01-03 - Gamma
+status: active
+
+- [ ] g1
+`;
+
+const EMPTY = `### 2026-01-04 - Delta
+status: active
+
+### 2026-01-05 - Epsilon
+status: active
+
+- [ ] e1
+`;
+
+const item = (p: { body: Array<{ type: string; item?: { content: string; status: string } }> }, content: string) =>
+  p.body.find((e) => e.type === "item" && e.item?.content === content)!.item!;
+
+test("done <phase>: completes remaining items + marks phase done + promotes NEXT active phase", async () => {
+  const { store, file } = setup(MULTIPHASE);
+  await store.done("Alpha");
+  const doc = new TodoStore(file).get();
+  const alpha = doc.phases.find((x) => x.title === "Alpha")!;
+  assert.equal(alpha.status, "done", "Alpha marked done");
+  assert.equal(item(alpha, "a1").status, "completed", "pending a1 completed");
+  assert.equal(item(alpha, "a2").status, "completed", "in_progress a2 completed");
+  assert.equal(item(alpha, "a3").status, "completed", "completed a3 stays completed");
+  const beta = doc.phases.find((x) => x.title === "Beta")!;
+  assert.equal(item(beta, "b1").status, "in_progress", "next active phase Beta promoted b1");
+  const gamma = doc.phases.find((x) => x.title === "Gamma")!;
+  assert.equal(item(gamma, "g1").status, "pending", "Gamma NOT promoted (only the next phase after Alpha)");
+});
+
+test("done <phase>: last active phase → marks done, no promotion, no throw", async () => {
+  const { store, file } = setup(MULTIPHASE);
+  await store.done("Gamma");
+  const doc = new TodoStore(file).get();
+  const gamma = doc.phases.find((x) => x.title === "Gamma")!;
+  assert.equal(gamma.status, "done");
+  assert.equal(item(gamma, "g1").status, "completed");
+  assert.equal(doc.phases.find((x) => x.title === "Alpha")!.status, "active");
+  // Alpha is untouched (its a2 stays in_progress); Beta/Gamma get no new in_progress.
+  assert.equal(item(doc.phases.find((x) => x.title === "Alpha")!, "a2").status, "in_progress", "Alpha a2 untouched");
+  assert.equal(item(doc.phases.find((x) => x.title === "Beta")!, "b1").status, "pending", "Beta not promoted");
+  assert.equal(item(doc.phases.find((x) => x.title === "Gamma")!, "g1").status, "completed", "Gamma g1 completed");
+});
+
+test("done <empty-phase>: marks the empty phase done without error", async () => {
+  const { store, file } = setup(EMPTY);
+  await store.done("Delta");
+  const doc = new TodoStore(file).get();
+  assert.equal(doc.phases.find((x) => x.title === "Delta")!.status, "done", "empty phase Delta closed");
+  assert.equal(item(doc.phases.find((x) => x.title === "Epsilon")!, "e1").status, "in_progress");
+});
+
+test("done <unknown-ref>: no-op (no phase or item changes)", async () => {
+  const { store, file } = setup(MULTIPHASE);
+  const before = new TodoStore(file).get();
+  await store.done("does-not-exist");
+  const after = new TodoStore(file).get();
+  assert.equal(after.phases.length, before.phases.length);
+  for (const ph of after.phases) {
+    assert.equal(ph.status, before.phases.find((x) => x.title === ph.title)!.status);
+  }
+});
+
+test("done <item-ref>: still works (completes item + same-phase auto-promote)", async () => {
+  const { store, file } = setup(MULTIPHASE);
+  await store.done("b1");
+  const doc = new TodoStore(file).get();
+  const beta = doc.phases.find((x) => x.title === "Beta")!;
+  assert.equal(item(beta, "b1").status, "completed", "b1 completed");
+  assert.equal(item(beta, "b2").status, "in_progress", "b2 promoted within Beta");
+});

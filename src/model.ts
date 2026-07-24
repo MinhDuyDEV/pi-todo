@@ -6,7 +6,7 @@
  * (immutably replacing the touched phase); invariants (single-active-task,
  * optional DAG validation) are enforced here.
  */
-import type { BlockEntry, ItemStatus, TodoItem, TodoPhase } from "./types";
+import type { BlockEntry, ItemStatus, PhaseStatus, TodoItem, TodoPhase } from "./types";
 
 /* ----------------------------- matching utils ----------------------------- */
 
@@ -324,6 +324,44 @@ export function setItemStatus(
 export function completeItem(phases: TodoPhase[], ref: string): TodoPhase[] {
   return setItemStatus(phases, ref, "completed");
 }
+/**
+ * Mark a phase done: complete its remaining open/blocked/in_progress items, set the phase
+ * status to "done", and promote the first pending item of the next active phase (the active
+ * phase that follows the closed one). Lets `done <phase>` close empty or in-progress phases.
+ * Returns phases unchanged if no phase matches `phaseTitle`.
+ */
+export function completePhase(phases: TodoPhase[], phaseTitle: string): TodoPhase[] {
+  const pi = findPhaseIndex(phases, phaseTitle);
+  if (pi < 0) return phases;
+  const closed = phases.map((p, i) =>
+    i === pi
+      ? {
+          ...p,
+          status: "done" as PhaseStatus,
+          body: p.body.map((e) =>
+            e.type === "item" && e.item.status !== "completed" && e.item.status !== "abandoned"
+              ? { type: "item" as const, item: { ...e.item, status: "completed" as ItemStatus } }
+              : e,
+          ),
+        }
+      : p,
+  );
+  const nextIdx = closed.findIndex((p, i) => i > pi && p.status === "active");
+  if (nextIdx < 0) return closed;
+  return promoteNext(closed, closed[nextIdx]!.title);
+}
+
+/**
+ * Complete an item OR a phase by ref. Item refs complete that item (and auto-promote the
+ * next pending item in the same phase); phase refs mark the whole phase done and promote the
+ * next active phase. Returns phases unchanged if `ref` matches neither an item nor a phase.
+ */
+export function completeRef(phases: TodoPhase[], ref: string): TodoPhase[] {
+  if (resolveRef(phases, ref)) return setItemStatus(phases, ref, "completed");
+  if (findPhase(phases, ref)) return completePhase(phases, ref);
+  return phases;
+}
+
 /** Mark abandoned. */
 export function abandonItem(phases: TodoPhase[], ref: string): TodoPhase[] {
   return setItemStatus(phases, ref, "abandoned");
