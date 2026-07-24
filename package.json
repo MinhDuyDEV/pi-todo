@@ -1,0 +1,75 @@
+{
+  "name": "@minhduydev/pi-todo",
+  "version": "0.1.0",
+  "description": "Durable markdown todo manager for Pi Coding Agent — structured TODO.md phases, a `todo` tool + `/todo` command, optional TUI widget, and single-active-task invariants.",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./core": {
+      "types": "./src/types.ts",
+      "default": "./src/types.ts"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "test:watch": "node --import tsx --test --watch tests/*.test.ts",
+    "prepublishOnly": "tsc --noEmit && node --import tsx --test tests/*.test.ts"
+  },
+  "keywords": [
+    "pi",
+    "pi-coding-agent",
+    "todo",
+    "tasks",
+    "extension",
+    "productivity",
+    "markdown",
+    "subagents",
+    "durable"
+  ],
+  "license": "MIT",
+  "author": "minhduydev <minhduy.dev@gmail.com>",
+  "homepage": "https://github.com/minhduydev/pi-todo#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/minhduydev/pi-todo.git"
+  },
+  "bugs": {
+    "url": "https://github.com/minhduydev/pi-todo/issues"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.81.1",
+    "@earendil-works/pi-tui": ">=1.0.0",
+    "typebox": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.81.1",
+    "@earendil-works/pi-tui": "^1.0.0",
+    "@types/node": "^22.0.0",
+    "typebox": "^1.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0"
+  }
+}
