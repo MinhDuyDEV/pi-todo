@@ -96,8 +96,16 @@ export interface PiTodoSettings {
   widget?: boolean;
   /** Widget placement. Default "belowEditor". */
   widgetPlacement?: "aboveEditor" | "belowEditor";
-  /** Max items rendered per phase in the widget. Default 5. */
+  /** Max items rendered under the focused phase in the widget. Default 5. */
   widgetItemsPerPhase?: number;
+  /** Widget density: "compact" (one line) | "focused" (one phase expanded, rest collapsed)
+   *  | "detailed" (focused with higher caps). Default "focused". */
+  widgetDensity?: "compact" | "focused" | "detailed";
+  /** Hard cap on total widget lines — a data-independent safety net so the widget
+   *  can never crush the editor/chatbox. Default 10. */
+  widgetMaxLines?: number;
+  /** Max non-focus phases shown as one-line collapsed summaries. Default 3. */
+  widgetCollapsedPhases?: number;
   /** Enable auto-reconciliation on subagent settle. Default true. */
   reconcileSubagents?: boolean;
   /** Enable the optional opt-in dependency/DAG features. Default false. */
@@ -112,6 +120,9 @@ export const DEFAULT_SETTINGS: Required<PiTodoSettings> = {
   widget: true,
   widgetPlacement: "belowEditor",
   widgetItemsPerPhase: 5,
+  widgetDensity: "focused",
+  widgetMaxLines: 10,
+  widgetCollapsedPhases: 3,
   reconcileSubagents: true,
   dependencies: false,
 };

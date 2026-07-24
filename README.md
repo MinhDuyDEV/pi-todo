@@ -20,7 +20,7 @@ The file is always the truth a human can read, `grep`, `git diff`, and that surv
 - **Reminder cadence** — a transient nudge via the `context` hook every N turns (shorter while an item is `in_progress`), suggesting the next step. Never persisted.
 - **Single-active-task invariant** — only one `in_progress` per phase; `done` auto-promotes the next pending.
 - **Subagent reconciliation** — when a delegated subagent (via the native `task` tool) finishes, matching open items are marked completed (success) or reverted to pending + blocker note (failure). Hooks Pi's standard `tool_execution_start`/`tool_execution_end` events for the `task` tool (correlated by `toolCallId`), *not* the `pi-subagents:*` eventbus (which the pinned extension declares in types but never emits at runtime). Subagents never write `TODO.md` directly — the parent's `TodoStore` does, in the host process.
-- **Optional widget** — a bounded below-editor widget with phase progress (`· 3/5`), root header (`Todos · 2/8`), matched lighting (a pending item glows when a live subagent works on it), and a spinner. Opt-in via `pi-todo.widget: true`.
+- **Optional widget** — a bounded below-editor widget: root header (`Todos · 2/8`), one **focused** phase expanded (with matched lighting — a pending item glows when a live subagent works on it), the rest collapsed to one-line summaries, hard-capped by `widgetMaxLines` so it can never crush the editor; fully-done phases are hidden. Density modes: `compact` (one line), `focused` (default), `detailed`. Opt-in via `pi-todo.widget: true`.
 - **Optional dependencies** — `blocks`/`blockedBy` annotations + `/todo deps` cycle/dangling validation. Opt-in via `pi-todo.dependencies: true`.
 
 ## Format (backwards-compatible)
@@ -49,7 +49,10 @@ The `status: X | updated: Y` combined line (with `|` separator) is the canonical
 | `reminderTurnsActive` | `3` | Active (in_progress) reminder cadence |
 | `widget` | `false` | Enable the below-editor widget |
 | `widgetPlacement` | `"belowEditor"` | `"aboveEditor"` or `"belowEditor"` |
-| `widgetItemsPerPhase` | `5` | Max items rendered per phase (walking viewport) |
+| `widgetItemsPerPhase` | `5` | Max items shown under the **focused** phase |
+| `widgetDensity` | `"focused"` | `"compact"` (one line) \u00b7 `"focused"` (one phase expanded, rest collapsed) \u00b7 `"detailed"` (focused with higher caps) |
+| `widgetMaxLines` | `10` | Hard cap on total widget lines — a data-independent safety net so the widget can never crush the editor |
+| `widgetCollapsedPhases` | `3` | Max non-focus phases shown as one-line collapsed summaries |
 | `reconcileSubagents` | `true` | Auto-reconcile on subagent settle |
 | `dependencies` | `false` | Enable opt-in `blocks`/`blockedBy` DAG |
 
@@ -76,7 +79,7 @@ Peer deps (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox
 
 The pi-harness ships a built-in `amp-todos` widget (`.pi/extensions/tui/`) and a `todo.ts` nudge that both watch `.pi/artifacts/TODO.md`. To avoid a double widget / double nudge when adopting `pi-todo`:
 
-- **Widget**: `pi-todo.widget` defaults to **false** (opt-in). Enable it only after disabling/removing the built-in `amp-todos` widget, or leave it off and keep `amp-todos`.
+- **Widget**: `pi-todo`'s widget is **bounded** — one focused phase expanded, the rest collapsed to a line each, hard-capped by `widgetMaxLines`; fully-done phases are hidden so finished work never wastes a line. To make it the sole below-editor todo widget, disable the built-in `amp-todos` via `piTui.todosWidget: false` in `.pi/settings.json` (pi-harness). Alternatively set `pi-todo.widget: false` and keep `amp-todos`.
 - **Cadence**: `pi-todo`'s `context`-hook reminder overlaps the built-in `todo.ts` nudge. Set `pi-todo.reminderTurns` high (or extend `enabled: false` for the cadence) if you keep `todo.ts`, or remove `todo.ts` when adopting `pi-todo`.
 
 ## Ops vs the `artifact-format` append-only rule

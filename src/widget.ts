@@ -46,23 +46,101 @@ export function renderWidgetLines(input: WidgetInput, settings: Required<PiTodoS
     const allItems = input.doc.phases.flatMap((p) => itemsOf(p));
     if (allItems.length === 0) return [];
 
-    const cap = Math.max(1, settings.widgetItemsPerPhase);
-    const rootDone = phases.filter((p) => itemsOf(p).every((i) => i.status === "completed" || i.status === "abandoned")).length;
+    // A phase is "done" when every item is completed/abandoned — hide those entirely
+    // so finished work never wastes a widget line.
+    const isDone = (p: TodoPhase): boolean => {
+      const items = itemsOf(p);
+      return items.length > 0 && items.every((i) => i.status === "completed" || i.status === "abandoned");
+    };
+    const rootDone = phases.filter(isDone).length;
+    const visible = phases.filter((p) => !isDone(p));
+    if (visible.length === 0) return []; // all done → hide the widget completely
+
+    const focus = pickFocus(visible);
+
+    // Compact: a single line — never grows, never crushes the editor.
+    if (settings.widgetDensity === "compact") {
+      return [compactLine(phases, rootDone, focus, settings, input, theme)];
+    }
+
+    // Focused / detailed: one phase expanded, the rest collapsed to a line each.
+    const detailed = settings.widgetDensity === "detailed";
+    const focusCap = Math.max(1, detailed ? Math.max(settings.widgetItemsPerPhase, 6) : settings.widgetItemsPerPhase);
+    const collapsedPhases = Math.max(1, detailed ? Math.max(settings.widgetCollapsedPhases, 4) : settings.widgetCollapsedPhases);
+
     const lines: string[] = [];
     lines.push(theme.bold(`Todos · ${rootDone}/${phases.length}`));
 
-    for (const phase of phases) {
-      const items = itemsOf(phase);
+    if (focus) {
+      const items = itemsOf(focus);
       const done = items.filter((i) => i.status === "completed" || i.status === "abandoned").length;
-      const selected = selectCollapsed(items, input.activeSubagentDescriptions, cap);
-      lines.push(theme.fg("accent", `${roman(indexOfPhase(input.doc, phase) + 1)}. ${phase.title}`) + theme.fg("muted", ` · ${done}/${items.length}`));
+      lines.push(
+        theme.fg("accent", `▾ ${roman(indexOfPhase(input.doc, focus) + 1)}. ${focus.title}`) +
+          theme.fg("muted", ` · ${done}/${items.length}`),
+      );
+      const selected = selectCollapsed(items, input.activeSubagentDescriptions, focusCap);
       for (const it of selected.shown) lines.push(formatItem(it, input, theme));
       if (selected.hidden > 0) lines.push(theme.fg("dim", `   … ${selected.hidden} more`));
     }
-    return lines;
+
+    const rest = visible.filter((p) => p !== focus);
+    for (const phase of rest.slice(0, collapsedPhases)) {
+      const items = itemsOf(phase);
+      const done = items.filter((i) => i.status === "completed" || i.status === "abandoned").length;
+      lines.push(
+        theme.fg("accent", `▸ ${roman(indexOfPhase(input.doc, phase) + 1)}. ${phase.title}`) +
+          theme.fg("muted", ` · ${done}/${items.length}`),
+      );
+    }
+    if (rest.length > collapsedPhases) {
+      lines.push(theme.fg("dim", `  +${rest.length - collapsedPhases} more phase(s)`));
+    }
+
+    return capToMaxLines(lines, settings.widgetMaxLines, theme);
   } catch {
     return [];
   }
+}
+
+/** Pick the phase to expand: most in_progress, then most pending, then first. */
+function pickFocus(phases: TodoPhase[]): TodoPhase | undefined {
+  const score = (p: TodoPhase): [number, number] => {
+    const items = itemsOf(p);
+    return [
+      items.filter((i) => i.status === "in_progress").length,
+      items.filter((i) => i.status === "pending").length,
+    ];
+  };
+  return [...phases].sort((a, b) => {
+    const [ai, ap] = score(a);
+    const [bi, bp] = score(b);
+    return bi - ai || bp - ap || 0;
+  })[0];
+}
+
+/** One-line compact summary: spinner + root progress + focus phase progress. */
+function compactLine(
+  phases: TodoPhase[],
+  rootDone: number,
+  focus: TodoPhase | undefined,
+  settings: Required<PiTodoSettings>,
+  input: WidgetInput,
+  theme: Theme,
+): string {
+  const head = `${input.spinnerFrame} ${theme.bold(`Todos · ${rootDone}/${phases.length}`)}`;
+  if (!focus) return head;
+  const items = itemsOf(focus);
+  const done = items.filter((i) => i.status === "completed" || i.status === "abandoned").length;
+  return `${head} · ${truncateLine(focus.title, 40)} · ${done}/${items.length}`;
+}
+
+/** Hard safety net: never let the widget exceed `max` lines, regardless of data. */
+function capToMaxLines(lines: string[], max: number, theme: Theme): string[] {
+  const cap = Math.max(0, max);
+  if (cap === 0) return [];
+  if (lines.length <= cap) return lines;
+  const overflow = lines.length - cap + 1;
+  return [...lines.slice(0, cap - 1), theme.fg("dim", `… +${overflow} (widget bounded)`)];
 }
 
 function formatItem(it: TodoItem, input: WidgetInput, theme: Theme): string {

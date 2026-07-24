@@ -56,45 +56,37 @@ export class Cadence {
 const OPEN_STATUSES: ReadonlySet<ItemStatus> = new Set(["pending", "in_progress", "blocked"]);
 const ACTIVE_PHASE: ReadonlySet<PhaseStatus> = new Set(["active"]);
 
-/** Decide whether to nudge this turn and, if so, build the reminder text. */
+/** Decide whether to nudge this turn and, if so, build the reminder text.
+ *  Always returns a single compact line so the cadence never stacks a multi-line
+ *  block of vertical noise on top of the (already bounded) widget. */
 export function buildReminder(s: CadenceSnapshot, s_: Required<PiTodoSettings>): string | null {
   const openPhases = s.phases.filter((p) => ACTIVE_PHASE.has(p.status));
   const openItems = openPhases.flatMap((p) => itemsOf(p).filter((i) => OPEN_STATUSES.has(i.status)));
   const hasInProgress = openItems.some((i) => i.status === "in_progress");
 
-  // Empty list nudge.
+  // Empty list nudge — one line.
   if (openItems.length === 0) {
     if (s.turnsSinceTodoTool < Math.max(1, s_.reminderTurns)) return null;
-    return [
-      "📋 No open todos tracked. If this is non-trivial work, record progress:",
-      "  - append a block to .pi/artifacts/TODO.md: `### YYYY-MM-DD - <title>` + `status: active`",
-      "  - or use the tool: `todo add <phase> <content>`",
-      "  - see the `artifact-format` skill for the canonical block format",
-    ].join("\n");
+    return "📋 No open todos — if this is non-trivial work, record progress with `todo add` or append a `### YYYY-MM-DD - <title>` block to .pi/artifacts/TODO.md.";
   }
 
   const threshold = hasInProgress ? s_.reminderTurnsActive : s_.reminderTurns;
   if (s.turnsSinceTodoTool < threshold) return null;
 
-  const lines: string[] = [];
-  // Show the first active phase with an in_progress or next pending item.
+  // Show the first active phase with an in_progress or next pending item — one line.
   const phase = openPhases.find((p) => itemsOf(p).some((i) => i.status === "in_progress")) ?? openPhases[0]!;
   const pItems = itemsOf(phase);
   const inProgress = pItems.find((i) => i.status === "in_progress");
   const nextPending = pItems.find((i) => i.status === "pending");
   const doneCount = pItems.filter((i) => i.status === "completed").length;
-
-  lines.push(`📋 Todo · phase "${phase.title}" (${doneCount}/${pItems.length} done)`);
-  if (inProgress) {
-    lines.push(`  [/] ${inProgress.content}`);
-    if (nextPending) lines.push(`  [ ] ${nextPending.content}  ← next`);
-  } else if (nextPending) {
-    lines.push(`  [ ] ${nextPending.content}  ← start with: todo start "${truncate(nextPending.content, 40)}"`);
-  }
   const blocked = openItems.filter((i) => i.status === "blocked").length;
-  if (blocked > 0) lines.push(`  ⚠ ${blocked} blocked item(s) — run \`todo deps\` to review.`);
-  lines.push(`  Update with: todo done "<ref>" | todo promote | todo view`);
-  return lines.join("\n");
+
+  const head = `📋 Todo · "${truncate(phase.title, 40)}" (${doneCount}/${pItems.length} done)`;
+  const parts: string[] = [];
+  if (inProgress) parts.push(`[/] ${truncate(inProgress.content, 50)}`);
+  if (nextPending) parts.push(`next: ${truncate(nextPending.content, 50)}`);
+  if (blocked > 0) parts.push(`⚠ ${blocked} blocked`);
+  return parts.length > 0 ? `${head} · ${parts.join(" · ")}` : head;
 }
 
 function truncate(s: string, n: number): string {

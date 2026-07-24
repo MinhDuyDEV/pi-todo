@@ -45,6 +45,13 @@ test("buildReminder: active cadence is shorter than idle", () => {
   assert.ok(r!.includes("next item"));
 });
 
+test("buildReminder: reminder is a single compact line (no multi-line block)", () => {
+  const snap = { phases: phases(), turnsSinceTodoTool: 3, turnsSinceStatusChange: 3, hasUsedTodoTool: true };
+  const r = buildReminder(snap, S);
+  assert.ok(r);
+  assert.ok(!r!.includes("\n"), "reminder should be one line, not a multi-line block");
+});
+
 test("buildReminder: idle cadence uses reminderTurns when no in_progress", () => {
   const md = `### A - phase one
 status: active
