@@ -24,6 +24,7 @@ import { buildTodoTool } from "./tool";
 import { registerTodoCommand } from "./command";
 import { SubagentTracker, wireSubagents, type Reconciler } from "./subagents";
 import { makeWidgetContent } from "./widget";
+import { emitLifecycleEvents } from "./events";
 
 export default function setup(pi: ExtensionAPI): void {
   let settings = resolveSettings(readSettings());
@@ -32,7 +33,14 @@ export default function setup(pi: ExtensionAPI): void {
   const storePath = resolve(process.cwd(), settings.todoFile);
   const tracker = new SubagentTracker();
   const cadence = new Cadence();
-  const store = new TodoStore(storePath, () => cadence.onStatusChange());
+  const store = new TodoStore(storePath, () => cadence.onStatusChange(), (prev, next) => {
+    emitLifecycleEvents(
+      (channel, data) => pi.events.emit(channel, data),
+      storePath,
+      prev,
+      next,
+    );
+  });
 
   // Watch the file for external edits (model, bash, `/todo edit`). The watcher
   // lives for the PROCESS lifetime — do not stop it on session_shutdown (which
