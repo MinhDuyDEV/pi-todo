@@ -1,6 +1,6 @@
 {
   "name": "@minhduydev/pi-todo",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Durable markdown todo manager for Pi Coding Agent \u2014 structured TODO.md phases, a `todo` tool + `/todo` command, optional TUI widget, and single-active-task invariants.",
   "type": "module",
   "main": "src/index.ts",
