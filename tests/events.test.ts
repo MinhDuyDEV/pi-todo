@@ -124,7 +124,7 @@ describe("emitLifecycleEvents", () => {
     assert.equal((event.item as unknown as Record<string, unknown>).phaseTitle, undefined);
   });
 
-  it("emits item-completed with #id when item has one", () => {
+  it("emits a bounded opaque digest when item has an id", () => {
     const emitted: Array<{ channel: string; data: unknown }> = [];
     const emit = (channel: string, data: unknown) => {
       emitted.push({ channel, data });
@@ -149,7 +149,8 @@ describe("emitLifecycleEvents", () => {
 
     assert.equal(emitted.length, 1);
     const event = emitted[0]!.data as TodoItemCompletedEvent;
-    assert.equal(event.item.id, "42");
+    assert.equal(event.item.id, undefined);
+    assert.match(event.item.idDigest ?? "", /^[a-f0-9]{64}$/);
     assert.equal(event.item.contentDigest, contentDigest("task with id"));
   });
 
@@ -634,7 +635,7 @@ describe("emitLifecycleEvents", () => {
     assert.equal(event.item.contentDigest, contentDigest("duplicate"));
   });
 
-  it("duplicate items in same phase: completing second emits separate event", () => {
+  it("duplicate items in same phase with mixed statuses match each occurrence once", () => {
     const emitted: Array<{ channel: string; data: unknown }> = [];
     const emit = (channel: string, data: unknown) => {
       emitted.push({ channel, data });
@@ -645,8 +646,8 @@ describe("emitLifecycleEvents", () => {
         title: "Omicron",
         status: "active",
         items: [
-          { content: "duplicate", status: "pending" },
-          { content: "duplicate", status: "pending" },
+          { content: "duplicate", status: "pending", id: "same-id" },
+          { content: "duplicate", status: "completed", id: "same-id" },
         ],
       },
     ]);
@@ -655,8 +656,8 @@ describe("emitLifecycleEvents", () => {
         title: "Omicron",
         status: "active",
         items: [
-          { content: "duplicate", status: "pending" },
-          { content: "duplicate", status: "completed" },
+          { content: "duplicate", status: "completed", id: "same-id" },
+          { content: "duplicate", status: "completed", id: "same-id" },
         ],
       },
     ]);
@@ -666,6 +667,95 @@ describe("emitLifecycleEvents", () => {
     assert.equal(emitted.length, 1);
     const event = emitted[0]!.data as TodoItemCompletedEvent;
     assert.equal(event.item.contentDigest, contentDigest("duplicate"));
+    assert.match(event.item.idDigest ?? "", /^[a-f0-9]{64}$/);
+  });
+
+  it("phase-closed: aligns inserted and reordered phases by title, not index", () => {
+    const emitted: Array<{ channel: string; data: unknown }> = [];
+    const emit = (channel: string, data: unknown) => {
+      emitted.push({ channel, data });
+    };
+
+    const prev = doc([
+      {
+        title: "Alpha",
+        status: "active",
+        items: [{ content: "alpha item", status: "pending" }],
+      },
+      {
+        title: "Beta",
+        status: "done",
+        items: [{ content: "beta item", status: "completed" }],
+      },
+    ]);
+    const next = doc([
+      {
+        title: "Beta",
+        status: "done",
+        items: [{ content: "beta item", status: "completed" }],
+      },
+      {
+        title: "Inserted",
+        status: "active",
+        items: [],
+      },
+      {
+        title: " alpha ",
+        status: "done",
+        items: [{ content: "alpha item", status: "completed" }],
+      },
+    ]);
+
+    emitLifecycleEvents(emit, "/p", prev, next);
+
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]!.channel, CHANNEL_PHASE_CLOSED);
+    const event = emitted[0]!.data as TodoPhaseClosedEvent;
+    assert.equal(event.phase.titleDigest, titleDigest("Alpha"));
+  });
+
+  it("item-completed: aligns inserted and reordered phases by title", () => {
+    const emitted: Array<{ channel: string; data: unknown }> = [];
+    const emit = (channel: string, data: unknown) => {
+      emitted.push({ channel, data });
+    };
+
+    const prev = doc([
+      {
+        title: "Alpha",
+        status: "active",
+        items: [{ content: "alpha item", status: "pending" }],
+      },
+      {
+        title: "Beta",
+        status: "active",
+        items: [{ content: "beta item", status: "pending" }],
+      },
+    ]);
+    const next = doc([
+      {
+        title: "Beta",
+        status: "active",
+        items: [{ content: "beta item", status: "pending" }],
+      },
+      {
+        title: "Inserted",
+        status: "active",
+        items: [],
+      },
+      {
+        title: " ALPHA ",
+        status: "active",
+        items: [{ content: "alpha item", status: "completed" }],
+      },
+    ]);
+
+    emitLifecycleEvents(emit, "/p", prev, next);
+
+    assert.equal(emitted.length, 1);
+    assert.equal(emitted[0]!.channel, CHANNEL_ITEM_COMPLETED);
+    const event = emitted[0]!.data as TodoItemCompletedEvent;
+    assert.equal(event.item.phaseTitleDigest, titleDigest("Alpha"));
   });
 
   it("phase-closed: only emits once per phase transition", () => {
@@ -697,6 +787,40 @@ describe("emitLifecycleEvents", () => {
     const emit2 = (channel: string, data: unknown) => { emitted2.push({ channel, data }); };
     emitLifecycleEvents(emit2, "/p", next, next);
     assert.equal(emitted2.length, 0);
+  });
+
+  it("custom oversized ids never appear raw or exceed bounded event metadata", () => {
+    const emitted: Array<{ channel: string; data: unknown }> = [];
+    const emit = (channel: string, data: unknown) => {
+      emitted.push({ channel, data });
+    };
+    const customId = "custom-" + "x".repeat(100_000);
+
+    const prev = doc([
+      {
+        title: "Sigma",
+        status: "active",
+        items: [{ content: "private task", status: "pending", id: customId }],
+      },
+    ]);
+    const next = doc([
+      {
+        title: "Sigma",
+        status: "active",
+        items: [{ content: "private task", status: "completed", id: customId }],
+      },
+    ]);
+
+    emitLifecycleEvents(emit, "/p", prev, next);
+
+    assert.equal(emitted.length, 1);
+    const event = emitted[0]!.data as TodoItemCompletedEvent;
+    const itemPayload = event.item as unknown as Record<string, unknown>;
+    assert.equal(itemPayload.id, undefined);
+    assert.equal(typeof event.item.idDigest, "string");
+    assert.equal(event.item.idDigest?.length, 64);
+    assert.ok(!JSON.stringify(event).includes(customId));
+    assert.ok(JSON.stringify(event).length < 2_000);
   });
 
   it("listener throw: fail-open does not crash emitLifecycleEvents", () => {
