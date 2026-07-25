@@ -60,6 +60,7 @@ export class TodoStore {
   constructor(
     private readonly path: string,
     private readonly onDocChange?: (doc: TodoDoc) => void,
+    private readonly onAfterWrite?: (prev: TodoDoc, next: TodoDoc) => void,
   ) {
     try {
       this.cache = this.readSync();
@@ -161,6 +162,11 @@ export class TodoStore {
         await this.write(doc);
         this.cache = doc;
         this.onDocChange?.(doc);
+        try {
+          this.onAfterWrite?.(before, doc);
+        } catch {
+          // fail open: never let event emission crash the store
+        }
         return { doc, changed: true };
       }
       throw new Error("TODO.md changed repeatedly during write (CAS retries exhausted)");
@@ -183,8 +189,14 @@ export class TodoStore {
       const tmp = `${this.path}.tmp-${process.pid}-${this.writeSeq++}`;
       await writeFile(tmp, md, "utf8");
       await rename(tmp, this.path);
+      const prev = this.cache;
       this.cache = this.readSync();
       this.onDocChange?.(this.cache);
+      try {
+        this.onAfterWrite?.(prev, this.cache);
+      } catch {
+        // fail open
+      }
     });
   }
 
