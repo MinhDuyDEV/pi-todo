@@ -15,6 +15,7 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync, existsSync } from "node:fs";
+import { assertPiCoreProtocolVersion } from "@minhduydev/pi-core";
 import type { ExtensionAPI, ContextEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { TodoStore } from "./store.js";
@@ -33,6 +34,9 @@ import {
 } from "./lifecycle-journal.js";
 
 export default function setup(pi: ExtensionAPI): void {
+  // Two pi-core copies with different canonicalization rules would recreate
+  // the digest divergence the shared package exists to end.
+  assertPiCoreProtocolVersion(1);
   let settings = resolveSettings(readSettings());
   if (!settings.enabled) return;
 

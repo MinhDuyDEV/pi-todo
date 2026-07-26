@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { taggedDigest } from "@minhduydev/pi-core";
 import { join } from "node:path";
 import {
   createLifecycleJournal,
@@ -28,18 +28,8 @@ export interface TodoReplayEventV1 {
   usageBindings: [LifecycleRecord["usage"]];
 }
 
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (!value || typeof value !== "object") return value;
-  const input = value as Record<string, unknown>;
-  return Object.fromEntries(Object.keys(input).sort().map((key) => [key, canonical(input[key])]));
-}
-
-function taggedDigest(value: unknown): string {
-  return `sha256:v1:${createHash("sha256")
-    .update(JSON.stringify(canonical(value)))
-    .digest("hex")}`;
-}
+// One of the audit's nine independent taggedDigest copies (§2.2) lived here;
+// the digest and its canonicalization rules now come from pi-core.
 
 function publicCursor(cursor: LifecycleCursor): TodoReplayCursorV1 {
   return {

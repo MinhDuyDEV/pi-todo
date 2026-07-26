@@ -74,11 +74,13 @@
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.81.1 <0.82.0",
     "@earendil-works/pi-tui": ">=0.81.1 <0.82.0",
-    "typebox": ">=1.0.0"
+    "typebox": ">=1.0.0",
+    "@minhduydev/pi-core": "^0.1.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.81.1",
     "@earendil-works/pi-tui": "^0.81.1",
+    "@minhduydev/pi-core": "file:../pi-core",
     "@types/node": "^22.0.0",
     "@types/proper-lockfile": "^4.1.4",
     "tsx": "^4.0.0",
