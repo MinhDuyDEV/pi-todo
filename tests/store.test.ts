@@ -101,6 +101,69 @@ status: active
   assert.equal(entry.item.blockerNote, "syntax error");
 });
 
+test("TodoStore.reconcileSubagent: explicit #id refs win over fuzzy text (roadmap 25)", async () => {
+  const { store, file } = setup(
+    `### A
+status: active
+
+- [ ] (#1) refactor the auth parser
+- [ ] (#2) refactor the auth serializer
+- [ ] (#3) unrelated cleanup
+`,
+  );
+  // The description names #3 explicitly; its TEXT resembles items #1/#2. The
+  // ref is the contract — text similarity must not widen the blast radius.
+  const changed = await store.reconcileSubagent("refactor the auth layer (#3)", true);
+  assert.equal(changed, true);
+  const items = new TodoStore(file)
+    .get()
+    .phases[0]!.body.filter((e): e is Extract<typeof e, { type: "item" }> => e.type === "item")
+    .map((e) => e.item);
+  assert.deepEqual(
+    items.map((it) => [it.id, it.status]),
+    [["#1", "pending"], ["#2", "pending"], ["#3", "completed"]],
+  );
+});
+
+test("TodoStore.reconcileSubagent: fuzzy fallback completes at most ONE best match", async () => {
+  const { store, file } = setup(
+    `### A
+status: active
+
+- [ ] extract the token parser for auth
+- [ ] extract the token parser for sessions
+- [ ] extract the token parser for billing
+`,
+  );
+  // Every item clears the similarity bar; the old behavior completed ALL of
+  // them from one subagent result.
+  const changed = await store.reconcileSubagent("extract the token parser for auth", true);
+  assert.equal(changed, true);
+  const items = new TodoStore(file)
+    .get()
+    .phases[0]!.body.filter((e): e is Extract<typeof e, { type: "item" }> => e.type === "item")
+    .map((e) => e.item);
+  assert.equal(items.filter((it) => it.status === "completed").length, 1);
+  assert.equal(items.find((it) => it.status === "completed")?.content, "extract the token parser for auth");
+});
+
+test("TodoStore.reconcileSubagent: an unresolvable #id completes nothing", async () => {
+  const { store, file } = setup(DOC);
+  // The description carries a ref, so fuzzy must NOT engage — a typo'd ref
+  // silently completing a lookalike item is the failure mode being removed.
+  const changed = await store.reconcileSubagent("write the tests (#99)", true);
+  assert.equal(changed, false);
+  const items = new TodoStore(file)
+    .get()
+    .phases[0]!.body.filter((e): e is Extract<typeof e, { type: "item" }> => e.type === "item")
+    .map((e) => e.item);
+  // DOC's open items stay open ("scaffold" was completed in the fixture).
+  assert.deepEqual(
+    items.map((it) => [it.content, it.status]),
+    [["write tests", "pending"], ["wire up tool", "pending"], ["scaffold", "completed"]],
+  );
+});
+
 test("TodoStore: atomic write leaves no .tmp file on success", async () => {
   const { store, dir } = setup(DOC);
   await store.add("A - phase one", "x");

@@ -357,33 +357,60 @@ export class TodoStore {
    */
   async reconcileSubagent(description: string, success: boolean, note?: string): Promise<boolean> {
     const r = await this.apply((phases) => {
-      let next = phases;
-      for (const phase of next) {
-        for (const entry of phase.body) {
-          if (entry.type !== "item") continue;
-          const it = entry.item;
-          if (it.status !== "pending" && it.status !== "in_progress" && it.status !== "blocked") continue;
-          if (!fuzzyMatchDesc(it.content, description)) continue;
-          next = next.map((p) =>
-            p === phase
-              ? {
-                  ...p,
-                  body: p.body.map((e) =>
-                    e.type === "item" && e.item === it
-                      ? {
-                          type: "item" as const,
-                          item: success
-                            ? { ...it, status: "completed" as const }
-                            : { ...it, status: "pending" as const, blockerNote: note ?? it.blockerNote },
-                        }
-                      : e,
-                  ),
-                }
-              : p,
-          );
+      // Explicit `#id` refs in the task description are THE correlation
+      // (roadmap 25): "Fix the parser (#3)" reconciles exactly item #3.
+      // Fuzzy description matching remains only as a fallback for tasks that
+      // carry no refs — and completes at most ONE best match. It used to
+      // complete EVERY item that cleared a 0.5 similarity bar, so one
+      // successful subagent could close half a phase it never worked on.
+      const explicitIds = new Set(description.match(/#\w+/g) ?? []);
+
+      const reconcilable = (it: TodoItem): boolean =>
+        it.status === "pending" || it.status === "in_progress" || it.status === "blocked";
+
+      const targets = new Set<TodoItem>();
+      if (explicitIds.size > 0) {
+        for (const phase of phases) {
+          for (const entry of phase.body) {
+            if (entry.type !== "item") continue;
+            if (!entry.item.id || !explicitIds.has(entry.item.id)) continue;
+            if (!reconcilable(entry.item)) continue;
+            targets.add(entry.item);
+          }
         }
+      } else {
+        let best: { item: TodoItem; score: number } | undefined;
+        for (const phase of phases) {
+          for (const entry of phase.body) {
+            if (entry.type !== "item") continue;
+            const it = entry.item;
+            if (!reconcilable(it)) continue;
+            if (!fuzzyMatchDesc(it.content, description)) continue;
+            const score = similarity(it.content, description);
+            if (!best || score > best.score) best = { item: it, score };
+          }
+        }
+        if (best) targets.add(best.item);
       }
-      return next;
+      if (targets.size === 0) return phases;
+
+      return phases.map((phase) => ({
+        ...phase,
+        body: phase.body.map((entry) =>
+          entry.type === "item" && targets.has(entry.item)
+            ? {
+                type: "item" as const,
+                item: success
+                  ? { ...entry.item, status: "completed" as const }
+                  : {
+                      ...entry.item,
+                      status: "pending" as const,
+                      blockerNote: note ?? entry.item.blockerNote,
+                    },
+              }
+            : entry,
+        ),
+      }));
     }, { autoPromote: false });
     return r.changed;
   }

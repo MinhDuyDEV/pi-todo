@@ -9,8 +9,13 @@
  * `pi-subagents:task-settled` at runtime (`orchestration/runtime.ts`). An older
  * comment here claimed it never did, and on the strength of that claim this
  * module gave up the typed contract and matched work by fuzzy `description`
- * string instead of `taskId`. Migrating to the typed events (correlating by
- * `taskId`) is tracked as roadmap item 25.
+ * string instead of by id.
+ *
+ * Correlation contract (roadmap 25): a task description that names explicit
+ * item refs — "Fix the parser (#3)" — reconciles EXACTLY those `#id`s;
+ * `TodoStore.reconcileSubagent` resolves them and never widens to text
+ * matching when a ref is present. Fuzzy description matching survives only
+ * for ref-less descriptions, and completes at most one best-scoring item.
  *
  * Two roles:
  *  1. Matched lighting — while a `task` tool call is in flight, expose its
