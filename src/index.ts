@@ -24,7 +24,13 @@ import { buildTodoTool } from "./tool";
 import { registerTodoCommand } from "./command";
 import { SubagentTracker, wireSubagents, type Reconciler } from "./subagents";
 import { makeWidgetContent } from "./widget";
-import { emitLifecycleEvents } from "./events";
+import { computeDocDigest, emitLifecycleEvents } from "./events";
+import {
+  createLifecycleJournal,
+  createLifecycleRecord,
+  parseUsageBinding,
+  type UsageBinding,
+} from "./lifecycle-journal";
 
 export default function setup(pi: ExtensionAPI): void {
   let settings = resolveSettings(readSettings());
@@ -33,13 +39,86 @@ export default function setup(pi: ExtensionAPI): void {
   const storePath = resolve(process.cwd(), settings.todoFile);
   const tracker = new SubagentTracker();
   const cadence = new Cadence();
-  const store = new TodoStore(storePath, () => cadence.onStatusChange(), (prev, next) => {
+  const usageReceipts = new Map<string, UsageBinding>();
+  let currentUsage: UsageBinding[] = [];
+  const lifecycleJournal = createLifecycleJournal(
+    resolve(process.cwd(), ".pi", "artifacts", "todo", "lifecycle"),
+  );
+
+  pi.events.on("pi-learning:v1:usage-receipts-issued", (payload: unknown) => {
+    if (!payload || typeof payload !== "object") return;
+    const receipts = (payload as { receipts?: unknown }).receipts;
+    if (!Array.isArray(receipts)) return;
+    for (const value of receipts) {
+      try {
+        const receipt = parseUsageBinding(value);
+        usageReceipts.set(receipt.usageId, receipt);
+      } catch {
+        // Invalid cross-package receipts are intentionally ignored.
+      }
+    }
+  });
+
+  const usageScope = {
+    begin(ids: readonly string[]): void {
+      currentUsage = ids.map((id) => {
+        const receipt = usageReceipts.get(id);
+        if (!receipt) throw new Error(`Unknown or expired usage receipt: ${id}`);
+        return receipt;
+      });
+    },
+    end(): void {
+      currentUsage = [];
+    },
+  };
+
+  const store = new TodoStore(storePath, () => cadence.onStatusChange(), async (prev, next) => {
+    const completed: Record<string, unknown>[] = [];
     emitLifecycleEvents(
-      (channel, data) => pi.events.emit(channel, data),
+      (channel, data) => {
+        completed.push(data as unknown as Record<string, unknown>);
+        pi.events.emit(channel, data);
+      },
       storePath,
       prev,
       next,
     );
+    if (currentUsage.length === 0 || completed.length === 0) return;
+
+    const prior = await lifecycleJournal.recover();
+    let sequence = prior.at(-1)?.sequence ?? 0;
+    for (const event of completed) {
+      const phase = event.phase as { titleDigest?: string } | undefined;
+      const item = event.item as {
+        idDigest?: string;
+        contentDigest?: string;
+        phaseTitleDigest?: string;
+      } | undefined;
+      const itemId = phase
+        ? `phase:${phase.titleDigest}`
+        : `item:${item?.idDigest ?? item?.contentDigest}:${item?.phaseTitleDigest}`;
+      const completionEpoch = prior
+        .filter((record) => record.itemId === itemId)
+        .reduce((highest, record) => Math.max(highest, record.completionEpoch), 0) + 1;
+      for (const usage of currentUsage) {
+        sequence += 1;
+        const eventId = `todo:${String(event.eventId)}:${usage.usageId}`;
+        await lifecycleJournal.append(createLifecycleRecord({
+          version: 1,
+          streamId: lifecycleJournal.streamId,
+          sequence,
+          eventId,
+          idempotencyKey: eventId,
+          occurredAt: String(event.occurredAt),
+          itemId,
+          ...(phase ? { phaseId: itemId } : {}),
+          completionEpoch,
+          beforeDigest: `sha256:v1:${computeDocDigest(prev)}`,
+          afterDigest: `sha256:v1:${computeDocDigest(next)}`,
+          usage,
+        }));
+      }
+    }
   });
 
   // Watch the file for external edits (model, bash, `/todo edit`). The watcher
@@ -49,7 +128,12 @@ export default function setup(pi: ExtensionAPI): void {
   store.startWatch();
 
   // --- the tool + slash command -------------------------------------------
-  pi.registerTool(buildTodoTool(store, settings, () => cadence.onTodoToolCall()));
+  pi.registerTool(buildTodoTool(
+    store,
+    settings,
+    () => cadence.onTodoToolCall(),
+    usageScope,
+  ));
   registerTodoCommand(pi, store, settings, () => cadence.onTodoToolCall());
 
   // --- subagent reconciliation + matched lighting -------------------------

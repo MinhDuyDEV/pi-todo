@@ -60,7 +60,7 @@ export class TodoStore {
   constructor(
     private readonly path: string,
     private readonly onDocChange?: (doc: TodoDoc) => void,
-    private readonly onAfterWrite?: (prev: TodoDoc, next: TodoDoc) => void,
+    private readonly onAfterWrite?: (prev: TodoDoc, next: TodoDoc) => void | Promise<void>,
   ) {
     try {
       this.cache = this.readSync();
@@ -163,7 +163,7 @@ export class TodoStore {
         this.cache = doc;
         this.onDocChange?.(doc);
         try {
-          this.onAfterWrite?.(before, doc);
+          await this.onAfterWrite?.(before, doc);
         } catch {
           // fail open: never let event emission crash the store
         }
@@ -193,7 +193,7 @@ export class TodoStore {
       this.cache = this.readSync();
       this.onDocChange?.(this.cache);
       try {
-        this.onAfterWrite?.(prev, this.cache);
+        await this.onAfterWrite?.(prev, this.cache);
       } catch {
         // fail open
       }

@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createTodoReplayPort } from "../src/replay";
 
 interface Handler {
   event: string;
@@ -108,6 +109,43 @@ test("real-session load: setup() registers tool + command + lifecycle handlers w
     assert.ok(pi.handlers.some((h) => h.event === "context"));
     // session_shutdown must NOT throw (previously a TypeError from bogus pi.on unsub)
     assert.doesNotThrow(() => pi.dispatch("session_shutdown", {}));
+  });
+});
+
+test("real-session load: explicit usage IDs populate the durable lifecycle replay journal", async () => {
+  await withTempProject(async (dir) => {
+    const pi = fakePi();
+    (await import("../src/index")).default(pi as never);
+    const tagged = (character: string) => `sha256:v1:${character.repeat(64)}`;
+    pi.events.emit("pi-learning:v1:usage-receipts-issued", {
+      version: 1,
+      receipts: [{
+        version: 1,
+        usageId: tagged("a"),
+        projectId: "project-1",
+        trustEpoch: "trust-1",
+        sessionGeneration: "session-1",
+        consumer: { kind: "parent-turn", id: "parent-1" },
+        correlationId: "corr-1",
+        requestDigest: tagged("b"),
+        queryDigest: tagged("c"),
+        learningId: "learning-1",
+        learningRevision: 1,
+        learningDigest: tagged("d"),
+        returnedAt: "2026-07-26T00:00:00.000Z",
+      }],
+    });
+    const tool = pi.tool("todo")!;
+    await tool.execute("id", { op: "add", phase: "Linked", content: "linked task" }, undefined, undefined, undefined);
+    const done = await tool.execute("id", {
+      op: "done",
+      ref: "Linked",
+      usage_ids: [tagged("a")],
+    }, undefined, undefined, undefined);
+    assert.ok((done as { content: { text: string }[] }).content[0]!.text.includes("✓"));
+    const page = await createTodoReplayPort({ projectDirectory: dir }).replay(undefined, 10);
+    assert.equal(page.events.length, 1);
+    assert.equal(page.events[0]?.usageBindings[0]?.usageId, tagged("a"));
   });
 });
 

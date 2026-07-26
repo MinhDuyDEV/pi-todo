@@ -231,3 +231,27 @@ export function emitLifecycleEvents(
     // Lifecycle emission is fail-open and must not block the durable TODO write.
   }
 }
+
+// The strict lifecycle producer/replay protocol is public from ./events.
+export {
+  LIFECYCLE_PROTOCOL_VERSION,
+  LifecycleIdempotencyConflictError,
+  LifecycleJournal,
+  assertNewCompletionEpoch,
+  createLifecycleJournal,
+  createLifecycleRecord,
+  createLifecycleReplayPort,
+  createStableIdentity,
+  createStableItemId,
+  isCorrelatedLifecycleRecord,
+  parseLifecycleRecord,
+} from "./lifecycle-journal.js";
+export type {
+  LifecycleCursor,
+  LifecycleJournalOptions,
+  LifecycleRecord,
+  LifecycleReplayPort,
+  ReplayPage,
+  UsageBinding,
+  UsageConsumer,
+} from "./lifecycle-journal.js";

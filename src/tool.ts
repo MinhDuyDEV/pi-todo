@@ -13,10 +13,16 @@ import type { TodoStore } from "./store";
 import { itemsOf } from "./model";
 import type { ItemStatus, PiTodoSettings } from "./types";
 
+export interface TodoUsageScope {
+  begin(usageIds: readonly string[]): void;
+  end(): void;
+}
+
 export function buildTodoTool(
   store: TodoStore,
   settings: Required<PiTodoSettings>,
   onUse: () => void,
+  usageScope?: TodoUsageScope,
 ): ToolDefinition {
   return {
     name: "todo",
@@ -48,12 +54,26 @@ export function buildTodoTool(
       note: Type.Optional(Type.String({ description: "Blocker note (for block)" })),
       toPhase: Type.Optional(Type.String({ description: "Target phase title (for move)" })),
       after: Type.Optional(Type.String({ description: "Insert after this ref (for add)" })),
+      usage_ids: Type.Optional(
+        Type.Array(Type.String(), {
+          maxItems: 16,
+          description: "Exact pi-learning usage receipt IDs for learnings this operation actually uses",
+        }),
+      ),
     }),
     async execute(_toolCallId, params) {
       onUse();
       try {
-        const r = await dispatch(store, settings, params as Params);
-        return textResult(r);
+        const usageIds = Array.isArray((params as Params).usage_ids)
+          ? (params as Params).usage_ids.map(String)
+          : [];
+        usageScope?.begin(usageIds);
+        try {
+          const r = await dispatch(store, settings, params as Params);
+          return textResult(r);
+        } finally {
+          usageScope?.end();
+        }
       } catch (e) {
         return textResult(`✗ todo error: ${e instanceof Error ? e.message : String(e)}`);
       }
