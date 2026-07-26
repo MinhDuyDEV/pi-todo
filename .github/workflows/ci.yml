@@ -1,0 +1,42 @@
+# Minimal per-package gate. The audit (X-D) found this package had NO CI at
+# all — the todo layer whose data-loss regressions nothing verified on push. The
+# cross-package integration gate lives in the pi-harness repository; this one
+# proves the package against itself.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e26f53fdd6af78d2d5eb # v4
+      # pi-core is a peerDependency resolved from a sibling checkout in dev.
+      - name: Clone pi-core
+        shell: bash
+        env:
+          ORG: ${{ github.repository_owner }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          if ! git clone --depth 1 --branch "$BRANCH" "https://github.com/$ORG/pi-core.git" ../pi-core 2>/dev/null; then
+            git clone --depth 1 "https://github.com/$ORG/pi-core.git" ../pi-core
+          fi
+          (cd ../pi-core && npm install --no-audit --no-fund && npm run build)
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+      - run: npm install --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build

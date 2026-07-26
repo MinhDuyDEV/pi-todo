@@ -69,7 +69,8 @@
   "pi": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "replayPort": "./replay"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": ">=0.81.1 <0.82.0",
