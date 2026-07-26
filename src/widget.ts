@@ -17,9 +17,9 @@
  */
 import { visibleWidth, type Component } from "@earendil-works/pi-tui";
 import type { Theme } from "@earendil-works/pi-coding-agent";
-import type { ItemStatus, PiTodoSettings, TodoItem, TodoPhase } from "./types";
-import { itemsOf, normalizeContent, similarity } from "./model";
-import type { TodoDoc } from "./markdown";
+import type { ItemStatus, PiTodoSettings, TodoItem, TodoPhase } from "./types.js";
+import { itemsOf, normalizeContent, similarity } from "./model.js";
+import type { TodoDoc } from "./markdown.js";
 
 const ICON: Record<ItemStatus, string> = {
   pending: "◻",

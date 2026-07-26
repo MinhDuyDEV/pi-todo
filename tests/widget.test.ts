@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderWidgetLines, truncateLine } from "../src/widget";
-import { parseMarkdown } from "../src/markdown";
-import { DEFAULT_SETTINGS } from "../src/types";
+import { renderWidgetLines, truncateLine } from "../src/widget.js";
+import { parseMarkdown } from "../src/markdown.js";
+import { DEFAULT_SETTINGS } from "../src/types.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 
 // Minimal fake theme: wraps text with color tags so assertions can verify coloring.

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SubagentTracker, wireSubagents, classifyTaskEnd, TASK_TOOL_NAME } from "../src/subagents";
-import { TodoStore } from "../src/store";
+import { SubagentTracker, wireSubagents, classifyTaskEnd, TASK_TOOL_NAME } from "../src/subagents.js";
+import { TodoStore } from "../src/store.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

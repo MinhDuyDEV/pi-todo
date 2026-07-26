@@ -1,12 +1,16 @@
 /**
  * pi-todo — subagent integration via the native Pi tool lifecycle.
  *
- * The pinned `@minhduydev/pi-subagents` declares `pi-subagents:task-started` /
- * `task-settled` eventbus events in its *types*, but never emits them at
- * runtime — so subscribing to the eventbus is dead code. The real lifecycle
- * signal is the native `task` delegation tool going through Pi's standard
- * `tool_execution_start` / `tool_execution_end` events (the same events every
- * tool fires). We hook those instead.
+ * We hook the native `task` delegation tool through Pi's standard
+ * `tool_execution_start` / `tool_execution_end` events.
+ *
+ * NOTE — this is a host-level fallback, not the preferred path.
+ * `@minhduydev/pi-subagents` DOES emit `pi-subagents:task-started` and
+ * `pi-subagents:task-settled` at runtime (`orchestration/runtime.ts`). An older
+ * comment here claimed it never did, and on the strength of that claim this
+ * module gave up the typed contract and matched work by fuzzy `description`
+ * string instead of `taskId`. Migrating to the typed events (correlating by
+ * `taskId`) is tracked as roadmap item 25.
  *
  * Two roles:
  *  1. Matched lighting — while a `task` tool call is in flight, expose its

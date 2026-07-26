@@ -36,7 +36,16 @@ export type ItemStatus =
   | "abandoned"
   | "blocked";
 
-/** A single todo item. Identity = (phase title, content) + optional numeric #id. */
+/**
+ * A single todo item. Identity = (phase title, content) + optional numeric #id.
+ *
+ * `indent` / `bullet` / `raw` are **formatting provenance**, not semantics. They
+ * let the serializer reproduce the author's exact line when nothing semantic
+ * changed, so a parse → serialize round-trip does not flatten sub-item
+ * indentation, collapse aligned whitespace, or relocate a mid-line `(note: …)`.
+ * They are absent on items constructed programmatically, which serialize
+ * canonically. See `markdown.ts`.
+ */
 export interface TodoItem {
   /** Optional stable id (e.g. `#3`) used for dependency references. */
   id?: string;
@@ -49,6 +58,12 @@ export interface TodoItem {
   blocks: string[];
   /** Refs that block this item. */
   blockedBy: string[];
+  /** Leading whitespace of the source line (sub-item nesting). */
+  indent?: string;
+  /** Bullet character used in the source line (`-`, `*`, `+`). */
+  bullet?: string;
+  /** The source line verbatim; re-emitted when the item is semantically unchanged. */
+  raw?: string;
 }
 
 /** A phase = one `### YYYY-MM-DD - <title>` block. */
@@ -61,6 +76,13 @@ export interface TodoPhase {
   status: PhaseStatus;
   /** Parsed from `updated: <date>`. */
   updated?: string;
+  /**
+   * True when a **valid** `status:` / `updated:` meta line was consumed from the
+   * source. Distinguishes "this phase declared its status" from "a note merely
+   * looks like meta" — without it, a phase carrying both `status: done` and an
+   * unparseable `status: paused` note silently lost the `done`.
+   */
+  hasExplicitMeta?: boolean;
   /** Ordered block body: items interleaved with preserved prose notes. */
   body: BlockEntry[];
 }
@@ -92,7 +114,7 @@ export interface PiTodoSettings {
   reminderTurns?: number;
   /** Turn interval when an item is in_progress (shorter). Default 3. */
   reminderTurnsActive?: number;
-  /** Enable the below-editor widget. Default false (opt-in). */
+  /** Enable the below-editor widget. Default true (see DEFAULT_SETTINGS). */
   widget?: boolean;
   /** Widget placement. Default "belowEditor". */
   widgetPlacement?: "aboveEditor" | "belowEditor";

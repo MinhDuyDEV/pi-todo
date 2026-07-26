@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { TodoStore } from "../src/store";
+import { TodoStore } from "../src/store.js";
 import {
   emitLifecycleEvents,
   contentDigest,
@@ -13,13 +13,13 @@ import {
   computeIdempotencyKey,
   CHANNEL_ITEM_COMPLETED,
   CHANNEL_PHASE_CLOSED,
-} from "../src/events";
-import type { TodoDoc } from "../src/markdown";
+} from "../src/events.js";
+import type { TodoDoc } from "../src/markdown.js";
 import type {
   TodoItemCompletedEvent,
   TodoPhaseClosedEvent,
-} from "../src/events";
-import type { ItemStatus } from "../src/types";
+} from "../src/events.js";
+import type { ItemStatus } from "../src/types.js";
 
 const EMPTY_TODO = "# TODO\n\n";
 
@@ -911,7 +911,7 @@ describe("TodoStore onAfterWrite", () => {
     await store.add("Phase 2", "phase item");
     afterWriteCalls.length = 0;
 
-    const result = await store.done("Phase 2");
+    const result = await store.done("phase:Phase 2");
     assert.equal(result.changed, true);
     assert.equal(afterWriteCalls.length, 1);
 
@@ -926,7 +926,7 @@ describe("TodoStore onAfterWrite", () => {
 
   it("does NOT call onAfterWrite on no-op phase done() (already done)", async () => {
     afterWriteCalls.length = 0;
-    const result = await store.done("Phase 2");
+    const result = await store.done("phase:Phase 2");
     assert.equal(result.changed, false);
     assert.equal(afterWriteCalls.length, 0);
   });

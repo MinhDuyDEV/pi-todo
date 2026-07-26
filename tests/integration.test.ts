@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createTodoReplayPort } from "../src/replay";
+import { createTodoReplayPort } from "../src/replay.js";
 
 interface Handler {
   event: string;
@@ -52,11 +52,12 @@ function fakePi() {
   };
 }
 
-function fakeCtx(hasUI = true) {
+function fakeCtx(hasUI = true, trusted = true) {
   const widgets = new Map<string, unknown>();
   return {
     hasUI,
     cwd: process.cwd(),
+    isProjectTrusted: () => trusted,
     ui: {
       _widgets: widgets,
       setWidget(key: string, fn: unknown, _opts?: unknown) {
@@ -99,7 +100,7 @@ status: active | updated: 2026-07-25
 test("real-session load: setup() registers tool + command + lifecycle handlers without throwing", async () => {
   await withTempProject(async () => {
     const pi = fakePi();
-    const mod = await import("../src/index");
+    const mod = await import("../src/index.js");
     assert.equal(typeof mod.default, "function");
     mod.default(pi as never);
     assert.ok(pi.tool("todo"), "todo tool registered");
@@ -115,7 +116,10 @@ test("real-session load: setup() registers tool + command + lifecycle handlers w
 test("real-session load: explicit usage IDs populate the durable lifecycle replay journal", async () => {
   await withTempProject(async (dir) => {
     const pi = fakePi();
-    (await import("../src/index")).default(pi as never);
+    (await import("../src/index.js")).default(pi as never);
+    // The lifecycle journal binds todo completions into a cross-package trust
+    // ledger, so it only runs for a Pi-trusted project.
+    pi.dispatch("session_start", {}, fakeCtx(false, true) as never);
     const tagged = (character: string) => `sha256:v1:${character.repeat(64)}`;
     pi.events.emit("pi-learning:v1:usage-receipts-issued", {
       version: 1,
@@ -139,7 +143,7 @@ test("real-session load: explicit usage IDs populate the durable lifecycle repla
     await tool.execute("id", { op: "add", phase: "Linked", content: "linked task" }, undefined, undefined, undefined);
     const done = await tool.execute("id", {
       op: "done",
-      ref: "Linked",
+      ref: "phase:Linked",
       usage_ids: [tagged("a")],
     }, undefined, undefined, undefined);
     assert.ok((done as { content: { text: string }[] }).content[0]!.text.includes("✓"));
@@ -149,10 +153,48 @@ test("real-session load: explicit usage IDs populate the durable lifecycle repla
   });
 });
 
+test("real-session load: an UNTRUSTED project writes no usage bindings to the ledger", async () => {
+  await withTempProject(async (dir) => {
+    const pi = fakePi();
+    (await import("../src/index.js")).default(pi as never);
+    pi.dispatch("session_start", {}, fakeCtx(false, false) as never);
+    const tagged = (character: string) => `sha256:v1:${character.repeat(64)}`;
+    pi.events.emit("pi-learning:v1:usage-receipts-issued", {
+      version: 1,
+      receipts: [{
+        version: 1,
+        usageId: tagged("a"),
+        projectId: "project-1",
+        trustEpoch: "trust-1",
+        sessionGeneration: "session-1",
+        consumer: { kind: "parent-turn", id: "parent-1" },
+        correlationId: "corr-1",
+        requestDigest: tagged("b"),
+        queryDigest: tagged("c"),
+        learningId: "learning-1",
+        learningRevision: 1,
+        learningDigest: tagged("d"),
+        returnedAt: "2026-07-26T00:00:00.000Z",
+      }],
+    });
+    const tool = pi.tool("todo")!;
+    await tool.execute("id", { op: "add", phase: "Linked", content: "linked task" }, undefined, undefined, undefined);
+    // The todo itself still works — only the cross-package binding is withheld.
+    const done = await tool.execute("id", {
+      op: "done",
+      ref: "phase:Linked",
+      usage_ids: [tagged("a")],
+    }, undefined, undefined, undefined);
+    assert.ok((done as { content: { text: string }[] }).content[0]!.text.includes("✓"));
+    const page = await createTodoReplayPort({ projectDirectory: dir }).replay(undefined, 10);
+    assert.equal(page.events.length, 0, "no ledger events for an untrusted project");
+  });
+});
+
 test("real-session load: tool execute mutates TODO.md and view works", async () => {
   await withTempProject(async (dir) => {
     const pi = fakePi();
-    (await import("../src/index")).default(pi as never);
+    (await import("../src/index.js")).default(pi as never);
     const tool = pi.tool("todo")!;
     const add = await tool.execute("id", { op: "add", phase: "Sprint", content: "new task" }, undefined, undefined, undefined);
     assert.ok((add as { content: { text: string }[] }).content[0]!.text.includes("✓"));
@@ -168,7 +210,7 @@ test("real-session load: tool execute mutates TODO.md and view works", async () 
 test("real-session load: session_start registers the widget and render produces lines", async () => {
   await withTempProject(async () => {
     const pi = fakePi();
-    (await import("../src/index")).default(pi as never);
+    (await import("../src/index.js")).default(pi as never);
     const ctx = fakeCtx(true) as never;
     pi.dispatch("session_start", {}, ctx);
     const widgets = (ctx as unknown as { ui: { _widgets: Map<string, unknown> } }).ui._widgets;
@@ -185,7 +227,7 @@ test("real-session load: session_start registers the widget and render produces 
 test("real-session load: subagent reconcile (foreground done) marks item completed", async () => {
   await withTempProject(async () => {
     const pi = fakePi();
-    (await import("../src/index")).default(pi as never);
+    (await import("../src/index.js")).default(pi as never);
     const ctx = fakeCtx() as never;
     pi.dispatch("session_start", {}, ctx);
     // foreground task: start → end with phase "done"
@@ -201,7 +243,7 @@ test("real-session load: subagent reconcile (foreground done) marks item complet
 test("real-session load: background task (phase running) is NOT marked completed at launch", async () => {
   await withTempProject(async () => {
     const pi = fakePi();
-    (await import("../src/index")).default(pi as never);
+    (await import("../src/index.js")).default(pi as never);
     pi.dispatch("session_start", {}, fakeCtx() as never);
     pi.dispatch("tool_execution_start", { toolCallId: "b1", toolName: "task", args: { description: "write the tests" } }, undefined);
     pi.dispatch("tool_execution_end", { toolCallId: "b1", toolName: "task", result: { details: { phase: "running" } }, isError: false }, undefined);
@@ -216,7 +258,7 @@ test("real-session load: background task (phase running) is NOT marked completed
 test("real-session load: session_shutdown does not throw and clears subagent tracker", async () => {
   await withTempProject(async () => {
     const pi = fakePi();
-    (await import("../src/index")).default(pi as never);
+    (await import("../src/index.js")).default(pi as never);
     pi.dispatch("session_start", {}, fakeCtx() as never);
     pi.dispatch("tool_execution_start", { toolCallId: "g1", toolName: "task", args: { description: "ghost" } }, undefined);
     // session switch before the task ends — tracker should be cleared, no throw

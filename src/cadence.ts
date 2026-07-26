@@ -14,8 +14,8 @@
  *  - Any `todo` tool call resets the idle counter; a status change resets the
  *    staleness counter (so actively-progressing work stays quiet).
  */
-import type { ItemStatus, PhaseStatus, PiTodoSettings, TodoPhase } from "./types";
-import { itemsOf } from "./model";
+import type { ItemStatus, PhaseStatus, PiTodoSettings, TodoPhase } from "./types.js";
+import { itemsOf } from "./model.js";
 
 export interface CadenceSnapshot {
   phases: TodoPhase[];

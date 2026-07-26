@@ -1,15 +1,28 @@
 /**
  * pi-todo — markdown round-trip (pure, zero Pi coupling).
  *
- * `parseMarkdown` → `serializeMarkdown` is idempotent for well-formed input and
- * lossless for: phase headers, status/updated meta lines, checkbox items (with
- * optional `#id` and dependency annotations), and free-form prose "notes"
- * interleaved between items. Unknown meta lines are preserved as notes.
+ * `parseMarkdown` → `serializeMarkdown` is **idempotent** (`s(p(s(p(x)))) ===
+ * s(p(x))`) and **lossless** (`s(p(x)) === x` for canonical input). Those are
+ * different properties, and the suite tests both — a destructive-but-stable
+ * transform passes idempotence while quietly eating data, which is exactly how
+ * the `status: done` bug survived.
+ *
+ * Preserved: phase headers, status/updated meta lines, checkbox items (with
+ * optional `#id` and dependency annotations), sub-item indentation, the bullet
+ * character, interior whitespace, mid-line `(note: …)` placement, and free-form
+ * prose interleaved between items. Unknown meta lines are kept as notes.
+ *
+ * How formatting survives: each parsed item carries its source line in `raw`.
+ * The serializer re-emits `raw` verbatim whenever nothing semantic changed, and
+ * falls back to a canonical rendering (still honouring `indent`/`bullet`) only
+ * for items a mutation actually touched. In that fallback a mid-line
+ * `(note: …)` moves to the end of the line — the note is a field, not a
+ * position, so once the line is rebuilt its original offset is gone.
  *
  * Backwards-compatible: accepts both the pi-harness markers (`[ ]`, `[x]`) and
  * the oh-my-pi markers (`[/]`, `[-]`, `>` in_progress, `~` abandoned, `[!]` blocked).
  */
-import type { BlockEntry, ItemStatus, PhaseStatus, TodoItem, TodoPhase } from "./types";
+import type { BlockEntry, ItemStatus, PhaseStatus, TodoItem, TodoPhase } from "./types.js";
 
 /** A parsed todo document: leading preamble + ordered phases. */
 export interface TodoDoc {
@@ -58,6 +71,7 @@ export function parseMarkdown(md: string): TodoDoc {
     const body: BlockEntry[] = [];
     let status: PhaseStatus = "active";
     let updated: string | undefined;
+    let hasExplicitMeta = false;
     // Body runs until the next `### ` heading or EOF.
     while (i < lines.length && !isHeading(lines[i]!)) {
       const line = lines[i]!;
@@ -68,6 +82,7 @@ export function parseMarkdown(md: string): TodoDoc {
       if (meta) {
         if (meta.status) status = meta.status;
         if (meta.updated) updated = meta.updated;
+        hasExplicitMeta = true;
         i++;
         continue;
       }
@@ -83,7 +98,7 @@ export function parseMarkdown(md: string): TodoDoc {
       }
       i++;
     }
-    phases.push({ title, date, status, updated, body });
+    phases.push({ title, date, status, updated, hasExplicitMeta, body });
   }
   return { preamble, phases };
 }
@@ -96,10 +111,7 @@ export function serializeMarkdown(doc: TodoDoc): string {
   }
   for (const phase of doc.phases) {
     out.push(serializeHeader(phase));
-    const hasMetaNote = phase.body.some(
-      (e) => e.type === "note" && /^(status|updated):/i.test(e.text),
-    );
-    if (!hasMetaNote) {
+    if (needsMetaLine(phase)) {
       out.push(phase.updated ? `status: ${phase.status} | updated: ${phase.updated}` : `status: ${phase.status}`);
     }
     // Ensure a blank line between meta and the first body entry (only if the
@@ -124,6 +136,22 @@ export function serializeMarkdown(doc: TodoDoc): string {
   }
   // Trailing newline for POSIX files.
   return out.join("\n").replace(/\n*$/, "\n");
+}
+
+/**
+ * Should the canonical `status:` line be emitted for this phase?
+ *
+ * Skipping it is only safe in one narrow case: the phase never declared valid
+ * meta, its status is still the parse default, and the body contains a line
+ * that merely *looks* like meta — re-emitting there would duplicate what the
+ * note already says. In every other case the line MUST be written, or a real
+ * `status: done` disappears behind an unparseable `status: paused` note and the
+ * next parse silently reverts the phase to `active`.
+ */
+function needsMetaLine(phase: TodoPhase): boolean {
+  if (phase.hasExplicitMeta) return true;
+  if (phase.status !== "active" || phase.updated !== undefined) return true;
+  return !phase.body.some((e) => e.type === "note" && /^(status|updated):/i.test(e.text));
 }
 
 function isHeading(line: string | undefined): boolean {
@@ -171,21 +199,26 @@ const CHECKBOX_MAP: Record<string, ItemStatus> = {
   "!": "blocked",
 };
 
+/** Leading whitespace + bullet character of an item line. */
+function lineShape(line: string): { indent: string; bullet: string } {
+  const m = line.match(/^(\s*)([-*+])/);
+  return { indent: m?.[1] ?? "", bullet: m?.[2] ?? "-" };
+}
+
 /** Parse a single item line; returns null if the line is not an item. */
 export function parseItemLine(line: string): TodoItem | null {
   // Standard checkbox:  - [x] content
-  let m = line.match(/^\s*[-*+]\s+\[([ xX/\-!])\]\s*(.*)$/);
+  let m = line.match(/^(\s*)([-*+])\s+\[([ xX/\-!])\]\s*(.*)$/);
   if (m) {
-    const mark = m[1]!;
-    const status = CHECKBOX_MAP[mark] ?? "pending";
-    return parseItemContent(m[2]!, status);
+    const status = CHECKBOX_MAP[m[3]!] ?? "pending";
+    return parseItemContent(m[4]!, status, line);
   }
   // oh-my-pi in_progress alias:  - > content
   m = line.match(/^\s*[-*+]\s*>\s+(.*)$/);
-  if (m) return parseItemContent(m[1]!, "in_progress");
+  if (m) return parseItemContent(m[1]!, "in_progress", line);
   // oh-my-pi abandoned alias:  - ~ content
   m = line.match(/^\s*[-*+]\s*~\s+(.*)$/);
-  if (m) return parseItemContent(m[1]!, "abandoned");
+  if (m) return parseItemContent(m[1]!, "abandoned", line);
   return null;
 }
 
@@ -195,11 +228,17 @@ export function parseItemLine(line: string): TodoItem | null {
  * blocker note `(note: ...)`. A single left-to-right pass collects refs in
  * document order and removes all annotation spans (no fixed-iteration cap,
  * which previously broke idempotence for >8 annotations).
+ *
+ * Whitespace: only the *seams* left behind by removing an annotation span are
+ * collapsed. Interior whitespace inside the surviving segments is preserved
+ * verbatim, so an aligned line like `col1     col2` survives the round-trip. A
+ * blanket `\s+ → " "` used to flatten it.
  */
-function parseItemContent(rest: string, status: ItemStatus): TodoItem {
+function parseItemContent(rest: string, status: ItemStatus, raw: string): TodoItem {
+  const { indent, bullet } = lineShape(raw);
   let text = rest.trim();
   let id: string | undefined;
-  let m = text.match(/^\(#(\w+)\)\s*(.*)$/);
+  const m = text.match(/^\(#(\w+)\)\s*(.*)$/);
   if (m) {
     id = `#${m[1]}`;
     text = m[2]!.trim();
@@ -208,6 +247,8 @@ function parseItemContent(rest: string, status: ItemStatus): TodoItem {
   const blockedBy: string[] = [];
   let blockerNote: string | undefined;
   const re = /\s*\[(blocks|blocked by)\s+([^\]]+)\]\s*|\s*\(note:\s*([^)]+)\)\s*/g;
+  const segments: string[] = [];
+  let cursor = 0;
   for (const mm of text.matchAll(re)) {
     if (mm[1] === "blocks") {
       for (const r of mm[2]!.split(",").map((s) => s.trim()).filter(Boolean)) blocks.push(r);
@@ -216,9 +257,26 @@ function parseItemContent(rest: string, status: ItemStatus): TodoItem {
     } else if (mm[3]) {
       blockerNote = mm[3]!.trim();
     }
+    segments.push(text.slice(cursor, mm.index));
+    cursor = mm.index + mm[0].length;
   }
-  text = text.replace(re, " ").replace(/\s+/g, " ").trim();
-  return { id, content: text, status, blockerNote, blocks, blockedBy };
+  segments.push(text.slice(cursor));
+  text = segments.map((s) => s.trim()).filter(Boolean).join(" ");
+  return { id, content: text, status, blockerNote, blocks, blockedBy, indent, bullet, raw };
+}
+
+/** Semantic equality — ignores formatting provenance (`indent`/`bullet`/`raw`). */
+function sameSemantics(a: TodoItem, b: TodoItem): boolean {
+  return (
+    a.status === b.status &&
+    a.content === b.content &&
+    a.id === b.id &&
+    (a.blockerNote ?? "") === (b.blockerNote ?? "") &&
+    a.blocks.length === b.blocks.length &&
+    a.blocks.every((v, i) => v === b.blocks[i]) &&
+    a.blockedBy.length === b.blockedBy.length &&
+    a.blockedBy.every((v, i) => v === b.blockedBy[i])
+  );
 }
 
 const STATUS_MARK: Record<ItemStatus, string> = {
@@ -229,11 +287,22 @@ const STATUS_MARK: Record<ItemStatus, string> = {
   blocked: "!",
 };
 
-/** Serialize a single item back to its markdown line. */
+/**
+ * Serialize a single item back to its markdown line.
+ *
+ * An item whose semantics are unchanged since parse is re-emitted verbatim from
+ * `raw` — that is what keeps indentation, alignment, bullet style, and mid-line
+ * `(note: …)` placement intact. Only a genuinely mutated item is rebuilt, and
+ * even then its indentation and bullet are carried over.
+ */
 export function serializeItem(item: TodoItem): string {
+  if (item.raw !== undefined) {
+    const reparsed = parseItemLine(item.raw);
+    if (reparsed && sameSemantics(reparsed, item)) return item.raw;
+  }
   const mark = STATUS_MARK[item.status];
   const idPart = item.id ? `(${item.id}) ` : "";
-  let line = `- [${mark}] ${idPart}${item.content}`;
+  let line = `${item.indent ?? ""}${item.bullet ?? "-"} [${mark}] ${idPart}${item.content}`;
   if (item.blocks.length > 0) line += ` [blocks ${item.blocks.join(", ")}]`;
   if (item.blockedBy.length > 0) line += ` [blocked by ${item.blockedBy.join(", ")}]`;
   if (item.blockerNote) line += ` (note: ${item.blockerNote})`;

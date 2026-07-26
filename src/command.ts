@@ -12,8 +12,8 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { readFileSync } from "node:fs";
 
-import type { TodoStore } from "./store";
-import { itemsOf } from "./model";
+import type { TodoStore } from "./store.js";
+import { itemsOf } from "./model.js";
 
 export function registerTodoCommand(
   pi: ExtensionAPI,
@@ -34,12 +34,17 @@ export function registerTodoCommand(
           return;
         }
         if (op === "edit") {
+          // Snapshot the version we hand to the editor. If anything writes
+          // TODO.md while the editor is open (the model's `todo` tool, a
+          // subagent reconcile, another shell), writeRaw refuses instead of
+          // overwriting it with stale bytes.
+          const version = store.version();
           const md = await ctx.ui.editor("Edit TODO.md", readRaw(store));
           if (md === undefined) {
             ctx.ui.notify("Cancelled.", "info");
             return;
           }
-          await store.writeRaw(md);
+          await store.writeRaw(md, version);
           ctx.ui.notify("✓ TODO.md updated from editor.", "info");
           return;
         }

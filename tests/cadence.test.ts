@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Cadence, buildReminder } from "../src/cadence";
-import { parseMarkdown } from "../src/markdown";
-import { DEFAULT_SETTINGS } from "../src/types";
+import { Cadence, buildReminder } from "../src/cadence.js";
+import { parseMarkdown } from "../src/markdown.js";
+import { DEFAULT_SETTINGS } from "../src/types.js";
 
 const S = DEFAULT_SETTINGS;
 

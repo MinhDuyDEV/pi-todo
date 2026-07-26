@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TodoStore } from "../src/store";
+import { TodoStore } from "../src/store.js";
 
 function setup(doc = ""): { store: TodoStore; dir: string; file: string } {
   const dir = mkdtempSync(join(tmpdir(), "pi-todo-"));
@@ -147,6 +147,66 @@ test("concurrency: external edit during apply is not clobbered (CAS)", async () 
   assert.equal(keep.item.status, "completed");
 });
 
+test("concurrency: two store instances in one process never collide on a temp file (T-A)", async () => {
+  const { file } = setup("");
+  // The old temp name was `${pid}-${seq}` with `seq` per-instance, so the first
+  // write of every instance in a process picked the SAME path.
+  const a = new TodoStore(file);
+  const b = new TodoStore(file);
+  const results = await Promise.all([
+    ...Array.from({ length: 10 }, (_, k) => a.add("P", `a-${k}`).catch((e) => e as Error)),
+    ...Array.from({ length: 10 }, (_, k) => b.add("P", `b-${k}`).catch((e) => e as Error)),
+  ]);
+  const errs = results.filter((r) => r instanceof Error);
+  assert.equal(errs.length, 0, `no write should fail: ${errs.map(String).join("; ")}`);
+  const contents = new TodoStore(file)
+    .get()
+    .phases[0]!.body.filter((e) => e.type === "item")
+    .map((e) => (e as { item: { content: string } }).item.content);
+  assert.equal(new Set(contents).size, 20, "all 20 items from both instances survive");
+});
+
+test("CAS: a writer that loses every race THROWS instead of clobbering (T-B)", async () => {
+  const { store, file } = setup("### P\nstatus: active\n\n- [ ] keep\n");
+  const { writeFileSync, readFileSync } = await import("node:fs");
+  let n = 0;
+  const original = (store as unknown as { versionKey(): string }).versionKey;
+  // Force a permanent CAS conflict: every check reports a different version.
+  (store as unknown as { versionKey(): string }).versionKey = () => `conflict-${n++}`;
+  await assert.rejects(() => store.add("P", "should-not-land"), /CAS retries exhausted/);
+  (store as unknown as { versionKey(): string }).versionKey = original;
+  assert.equal(
+    readFileSync(file, "utf8").includes("should-not-land"),
+    false,
+    "the losing writer must not have written",
+  );
+  void writeFileSync;
+});
+
+test("CAS: a same-length, same-millisecond external edit is still detected (T-B)", async () => {
+  const { store, file } = setup("### P\nstatus: active\n\n- [ ] aaaa\n");
+  const version = store.version();
+  const { writeFileSync } = await import("node:fs");
+  const { utimesSync, statSync } = await import("node:fs");
+  const st = statSync(file);
+  // Same byte length, restored mtime — indistinguishable under an mtime:size key.
+  writeFileSync(file, "### P\nstatus: active\n\n- [ ] bbbb\n");
+  utimesSync(file, st.atime, st.mtime);
+  assert.notEqual(store.version(), version, "content fingerprint must notice the edit");
+});
+
+test("writeRaw: refuses to overwrite a file that changed since the caller read it", async () => {
+  const { store, file } = setup("### P\nstatus: active\n\n- [ ] keep\n");
+  const version = store.version();
+  const { writeFileSync, readFileSync } = await import("node:fs");
+  writeFileSync(file, "### P\nstatus: active\n\n- [ ] someone-else\n");
+  await assert.rejects(
+    () => store.writeRaw("### P\nstatus: active\n\n- [ ] stale-editor-buffer\n", version),
+    /changed since it was read/,
+  );
+  assert.match(readFileSync(file, "utf8"), /someone-else/);
+});
+
 test("readSync: ENOENT → empty; non-file (EISDIR) throws (does not clobber)", () => {
   const dir = mkdtempSync(join(tmpdir(), "pi-todo-err-"));
   const file = join(dir, "TODO.md");
@@ -192,7 +252,7 @@ const item = (p: { body: Array<{ type: string; item?: { content: string; status:
 
 test("done <phase>: completes remaining items + marks phase done + promotes NEXT active phase", async () => {
   const { store, file } = setup(MULTIPHASE);
-  await store.done("Alpha");
+  await store.done("phase:Alpha");
   const doc = new TodoStore(file).get();
   const alpha = doc.phases.find((x) => x.title === "Alpha")!;
   assert.equal(alpha.status, "done", "Alpha marked done");
@@ -207,7 +267,7 @@ test("done <phase>: completes remaining items + marks phase done + promotes NEXT
 
 test("done <phase>: last active phase → marks done, no promotion, no throw", async () => {
   const { store, file } = setup(MULTIPHASE);
-  await store.done("Gamma");
+  await store.done("phase:Gamma");
   const doc = new TodoStore(file).get();
   const gamma = doc.phases.find((x) => x.title === "Gamma")!;
   assert.equal(gamma.status, "done");
@@ -221,10 +281,31 @@ test("done <phase>: last active phase → marks done, no promotion, no throw", a
 
 test("done <empty-phase>: marks the empty phase done without error", async () => {
   const { store, file } = setup(EMPTY);
-  await store.done("Delta");
+  await store.done("phase:Delta");
   const doc = new TodoStore(file).get();
   assert.equal(doc.phases.find((x) => x.title === "Delta")!.status, "done", "empty phase Delta closed");
   assert.equal(item(doc.phases.find((x) => x.title === "Epsilon")!, "e1").status, "in_progress");
+});
+
+test("done <bare phase title>: does NOT close the phase (needs an explicit phase: ref)", async () => {
+  const { store, file } = setup(MULTIPHASE);
+  const result = await store.done("Alpha");
+  assert.equal(result.changed, false, "a bare title must not fall back to closing the phase");
+  const doc = new TodoStore(file).get();
+  const alpha = doc.phases.find((x) => x.title === "Alpha")!;
+  assert.equal(alpha.status, "active", "Alpha untouched");
+  assert.equal(item(alpha, "a1").status, "pending", "a1 untouched");
+  assert.equal(item(alpha, "a2").status, "in_progress", "a2 untouched");
+});
+
+test("done <1-char ref>: matches nothing (substring scoring no longer returns 0.9 for everything)", async () => {
+  const { store, file } = setup(MULTIPHASE);
+  for (const ref of ["a", "th", "AUTH"]) {
+    const result = await store.done(ref);
+    assert.equal(result.changed, false, `ref "${ref}" must not match`);
+  }
+  const doc = new TodoStore(file).get();
+  assert.equal(doc.phases.find((x) => x.title === "Alpha")!.status, "active");
 });
 
 test("done <unknown-ref>: no-op (no phase or item changes)", async () => {

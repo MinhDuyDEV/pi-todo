@@ -3,15 +3,22 @@
  * safety + a debounced fs.watch.
  *
  * Concurrency model (hardened after adversarial review):
+ *  - **Inter-process lock** (`proper-lockfile` on `<path>.lock`): the whole
+ *    read → mutate → rename critical section runs under it, so a second Pi
+ *    process, a second `TodoStore` instance, or an external writer cannot land
+ *    between the CAS check and the rename. Optimistic concurrency alone left
+ *    that TOCTOU window open and lost updates under real contention.
  *  - **In-process mutex**: all mutations (`apply`, `writeRaw`, `reconcileSubagent`)
  *    funnel through a single promise chain so tool ↔ reconcile ↔ `/todo edit`
- *    never overlap. (A lockless read-modify-write previously lost updates.)
- *  - **Unique temp file per write** (`${path}.tmp-${pid}-${seq}`): concurrent
- *    writes no longer share one temp → no ENOENT, no lost-update via rename.
- *  - **Optimistic-concurrency (CAS)** for external writers: `apply` stats the
- *    file (mtime+size) before read and before rename; if the file changed in
- *    the window, it re-reads + re-applies (bounded retries). External edits
- *    ($EDITOR, model bash) are no longer silently clobbered.
+ *    never overlap, without paying for the file lock on every queued call.
+ *  - **Unique temp file per write** (`${path}.tmp-${randomUUID()}`): two store
+ *    instances in one process used to derive the same first temp name from
+ *    `${pid}-${seq}` and clobber each other; a UUID cannot collide.
+ *  - **Optimistic-concurrency (CAS)** for external writers: `apply` fingerprints
+ *    the file *content* before read and before rename; if it changed in the
+ *    window, it re-reads + re-applies. Retries are bounded, and exhausting them
+ *    THROWS — it never falls through to an unconditional last-write-wins.
+ *    (`mtime:size` missed same-millisecond, same-length edits.)
  *  - **Narrowed error handling**: only `ENOENT` means "missing → empty"; an
  *    unreadable/invalid TODO.md (EISDIR/EACCES/parse) throws so we surface it
  *    instead of clobbering real content.
@@ -21,11 +28,13 @@
  *
  * No Pi coupling; `onDocChange` is wired by the integration layer.
  */
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, statSync, watch, type FSWatcher, type Stats } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
+import { lock } from "proper-lockfile";
 
-import { parseMarkdown, serializeMarkdown, type TodoDoc } from "./markdown";
+import { parseMarkdown, serializeMarkdown, type TodoDoc } from "./markdown.js";
 import {
   abandonItem,
   addItem,
@@ -33,28 +42,37 @@ import {
   completeRef,
   completePhase,
   editItem,
-  findPhase,
   moveItem,
   normalizeDoc,
+  parsePhaseRef,
   promoteNext,
   removeItem,
-  resolveRef,
   setItemStatus,
   startItem,
   unblockItem,
   addDependency,
-} from "./model";
-import type { ItemStatus, TodoItem, TodoPhase } from "./types";
+} from "./model.js";
+import type { ItemStatus, TodoItem, TodoPhase } from "./types.js";
 
-export type ApplyResult = { doc: TodoDoc; changed: boolean };
+/**
+ * Result of a mutation. `before` is included so a caller can report exactly
+ * which items a write touched — a `done` on a phase completes every open item
+ * in it, and "✓ Completed" alone hid that blast radius.
+ */
+export type ApplyResult = { doc: TodoDoc; changed: boolean; before: TodoDoc };
 
 const EMPTY_DOC: TodoDoc = { preamble: [], phases: [] };
+
+/** A held lock older than this is assumed abandoned (crashed process). */
+const LOCK_STALE_MS = 10_000;
+/** ~2s of patience before we give up waiting for a peer. */
+const LOCK_RETRIES = 20;
+const LOCK_RETRY_MS = 100;
 
 export class TodoStore {
   private cache: TodoDoc = EMPTY_DOC;
   private watcher: FSWatcher | null = null;
   private debounce: ReturnType<typeof setTimeout> | null = null;
-  private writeSeq = 0;
   private chain: Promise<unknown> = Promise.resolve(); // in-process mutex
 
   constructor(
@@ -110,6 +128,15 @@ export class TodoStore {
     return this.path;
   }
 
+  /**
+   * Opaque fingerprint of the file's current contents. Pass it back to
+   * {@link writeRaw} to make an out-of-band edit (e.g. `/todo edit`) refuse
+   * rather than clobber a change that landed while the editor was open.
+   */
+  version(): string {
+    return this.versionKey();
+  }
+
   /** Serialize `task` onto the in-process mutation chain (mutex). */
   private enqueue<T>(task: () => Promise<T>): Promise<T> {
     const run = this.chain.then(task, task) as Promise<T>;
@@ -120,25 +147,67 @@ export class TodoStore {
     return run;
   }
 
-  /** A composite file-version key (mtime + size) for optimistic concurrency. */
+  /**
+   * A content fingerprint for optimistic concurrency.
+   *
+   * `mtime:size` was cheaper but blind: an external edit landing in the same
+   * millisecond that keeps the byte length identical (a one-character swap, a
+   * status flip) produced the same key and was silently overwritten.
+   */
   private versionKey(): string {
     try {
       const st = statSync(this.path);
-      return `${st.mtimeMs}:${st.size}`;
+      if (!st.isFile()) return "not-a-file";
+      return createHash("sha256").update(readFileSync(this.path)).digest("hex");
     } catch (e) {
       return (e as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "err";
     }
   }
 
   /**
+   * Run `fn` holding the inter-process lock for this TODO file.
+   *
+   * The lock file lives next to the todo file (`TODO.md.lock`). `startWatch`
+   * filters by basename, so lock churn never triggers a re-read.
+   */
+  private async withFileLock<T>(fn: () => Promise<T>): Promise<T> {
+    await mkdir(dirname(this.path), { recursive: true });
+    let release: () => Promise<void>;
+    try {
+      release = await lock(this.path, {
+        lockfilePath: `${this.path}.lock`,
+        realpath: false,
+        stale: LOCK_STALE_MS,
+        update: LOCK_STALE_MS / 2,
+        retries: {
+          retries: LOCK_RETRIES,
+          factor: 1,
+          minTimeout: LOCK_RETRY_MS,
+          maxTimeout: LOCK_RETRY_MS,
+          randomize: true,
+        },
+      });
+    } catch (e) {
+      throw new Error(
+        `could not acquire the TODO.md lock (${this.path}.lock): ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    try {
+      return await fn();
+    } finally {
+      await release().catch(() => undefined);
+    }
+  }
+
+  /**
    * Apply a pure transformation to the phases, normalize invariants, and
-   * atomically write back — serialized + optimistic-concurrency-safe.
+   * atomically write back — serialized, locked, and CAS-checked.
    */
   async apply(
     fn: (phases: TodoPhase[]) => TodoPhase[],
     opts: { autoPromote?: boolean } = {},
   ): Promise<ApplyResult> {
-    return this.enqueue(async () => {
+    return this.enqueue(() => this.withFileLock(async () => {
       for (let attempt = 0; attempt < 5; attempt++) {
         const vBefore = this.versionKey();
         let before: TodoDoc;
@@ -151,13 +220,22 @@ export class TodoStore {
         // Pass a shallow clone so an in-place-mutating `fn` can't corrupt `before`.
         const input = before.phases.map((p) => ({ ...p, body: [...p.body] }));
         const beforeKey = serializeMarkdown({ preamble: [], phases: before.phases });
-        const next = normalizeDoc(fn(input), { autoPromote: opts.autoPromote ?? false });
+        const mutated = fn(input);
+        // Auto-promotion is a CONSEQUENCE of a mutation, never a standalone
+        // write. A `done`/`drop` whose ref matched nothing used to still promote
+        // the first pending item of every active phase — a ref typo silently
+        // started work items. The single-active invariant still always runs.
+        const didMutate = serializeMarkdown({ preamble: [], phases: mutated }) !== beforeKey;
+        const next = normalizeDoc(mutated, { autoPromote: didMutate && (opts.autoPromote ?? false) });
         if (serializeMarkdown({ preamble: [], phases: next }) === beforeKey) {
           this.cache = before;
-          return { doc: before, changed: false };
+          return { doc: before, changed: false, before };
         }
-        // CAS: if the file changed between read and write, retry (re-read + re-apply).
-        if (this.versionKey() !== vBefore && attempt < 4) continue;
+        // CAS: if the file changed between read and write, retry (re-read +
+        // re-apply). No `attempt < 4` escape hatch — that made the final
+        // attempt an unconditional overwrite, so a writer losing every race
+        // still clobbered the file and the throw below was unreachable.
+        if (this.versionKey() !== vBefore) continue;
         const doc: TodoDoc = { preamble: before.preamble, phases: next };
         await this.write(doc);
         this.cache = doc;
@@ -167,26 +245,45 @@ export class TodoStore {
         } catch {
           // fail open: never let event emission crash the store
         }
-        return { doc, changed: true };
+        return { doc, changed: true, before };
       }
       throw new Error("TODO.md changed repeatedly during write (CAS retries exhausted)");
-    });
+    }));
   }
 
-  /** Atomic write with a UNIQUE temp file per call (no shared-temp collision). */
+  /**
+   * Atomic write with a UNIQUE temp file per call.
+   *
+   * The name is a UUID, not `${pid}-${seq}`: two `TodoStore` instances in the
+   * same process each start their own `seq` at 0, so their first writes used to
+   * pick the identical temp path and race — one `writeFile` clobbering the
+   * other's bytes, or the loser's `rename` hitting ENOENT.
+   */
   private async write(doc: TodoDoc): Promise<void> {
     const md = serializeMarkdown(doc);
     await mkdir(dirname(this.path), { recursive: true });
-    const tmp = `${this.path}.tmp-${process.pid}-${this.writeSeq++}`;
+    const tmp = this.tempPath();
     await writeFile(tmp, md, "utf8");
     await rename(tmp, this.path);
   }
 
-  /** Write raw markdown verbatim (`/todo edit`). Serialized + unique temp. */
-  async writeRaw(md: string): Promise<void> {
-    return this.enqueue(async () => {
+  private tempPath(): string {
+    return `${this.path}.tmp-${randomUUID()}`;
+  }
+
+  /**
+   * Write raw markdown verbatim (`/todo edit`). Serialized + unique temp +
+   * compare-and-swap against the version the caller last read, so an external
+   * editor or another writer that changed the file in the meantime is not
+   * silently overwritten.
+   */
+  async writeRaw(md: string, expectedVersion?: string): Promise<void> {
+    return this.enqueue(() => this.withFileLock(async () => {
+      if (expectedVersion !== undefined && this.versionKey() !== expectedVersion) {
+        throw new Error("TODO.md changed since it was read (refusing to overwrite)");
+      }
       await mkdir(dirname(this.path), { recursive: true });
-      const tmp = `${this.path}.tmp-${process.pid}-${this.writeSeq++}`;
+      const tmp = this.tempPath();
       await writeFile(tmp, md, "utf8");
       await rename(tmp, this.path);
       const prev = this.cache;
@@ -197,7 +294,7 @@ export class TodoStore {
       } catch {
         // fail open
       }
-    });
+    }));
   }
 
   /* --------------------------- mutation wrappers --------------------------- */
@@ -212,15 +309,21 @@ export class TodoStore {
   async setStatus(ref: string, status: ItemStatus, note?: string): Promise<ApplyResult> {
     return this.apply((p) => setItemStatus(p, ref, status, note));
   }
+  /**
+   * Complete one item, or — only for an explicit `phase:<title>` ref — a whole
+   * phase. The branch is decided from the ref STRING, not from the cached
+   * document: the old code read `this.get().phases` (a cache that may be stale)
+   * to choose the branch and then re-read from disk inside `apply()`, so a
+   * stale cache could send a ref down the wrong branch.
+   */
   async done(ref: string): Promise<ApplyResult> {
-    const phases = this.get().phases;
-      // A phase ref closes the whole phase and promotes only the next active phase
-      // (preserving the single-active-task invariant); an item ref keeps the existing
-      // same-phase + cross-phase auto-promote behavior.
-      if (!resolveRef(phases, ref) && findPhase(phases, ref)) {
-        return this.apply((p) => completePhase(p, ref), { autoPromote: false });
-      }
-      return this.apply((p) => completeRef(p, ref), { autoPromote: true });
+    const phaseTitle = parsePhaseRef(ref);
+    if (phaseTitle !== null) {
+      // Closing a phase promotes only the next active phase, preserving the
+      // single-active-task invariant.
+      return this.apply((p) => completePhase(p, phaseTitle), { autoPromote: false });
+    }
+    return this.apply((p) => completeRef(p, ref), { autoPromote: true });
   }
   async drop(ref: string): Promise<ApplyResult> {
     return this.apply((p) => abandonItem(p, ref), { autoPromote: true });
@@ -314,7 +417,7 @@ export class TodoStore {
   }
 }
 
-import { normalizeContent, similarity } from "./model";
+import { normalizeContent, similarity } from "./model.js";
 function fuzzyMatchDesc(content: string, description: string): boolean {
   const c = normalizeContent(content);
   const d = normalizeContent(description);

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { serializeMarkdown, type TodoDoc } from "./markdown";
-import type { TodoItem, TodoPhase } from "./types";
+import { serializeMarkdown, type TodoDoc } from "./markdown.js";
+import type { TodoItem, TodoPhase } from "./types.js";
 
 export const CHANNEL_ITEM_COMPLETED = "pi-todo:item-completed:v1";
 export const CHANNEL_PHASE_CLOSED = "pi-todo:phase-closed:v1";

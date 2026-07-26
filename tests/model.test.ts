@@ -14,9 +14,9 @@ import {
   startItem,
   moveItem,
   validateDeps,
-} from "../src/model";
-import type { TodoPhase } from "../src/types";
-import { parseMarkdown } from "../src/markdown";
+} from "../src/model.js";
+import type { TodoPhase } from "../src/types.js";
+import { parseMarkdown } from "../src/markdown.js";
 
 const DOC = `### A - phase one
 status: active

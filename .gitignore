@@ -5,3 +5,8 @@ node_modules/
 !src/**/*.ts
 !tests/**/*.ts
 .tsbuildinfo
+
+# store write artifacts
+*.lock
+*.tmp-*
+dist/

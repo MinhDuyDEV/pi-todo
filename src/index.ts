@@ -12,37 +12,50 @@
  *
  * Declared in package.json: `"pi": { "extensions": ["./src/index.ts"] }`.
  */
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { readFileSync, existsSync } from "node:fs";
 import type { ExtensionAPI, ContextEvent, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-import { TodoStore } from "./store";
-import { Cadence, buildReminder } from "./cadence";
-import { resolveSettings, type PiTodoSettings } from "./types";
-import { buildTodoTool } from "./tool";
-import { registerTodoCommand } from "./command";
-import { SubagentTracker, wireSubagents, type Reconciler } from "./subagents";
-import { makeWidgetContent } from "./widget";
-import { computeDocDigest, emitLifecycleEvents } from "./events";
+import { TodoStore } from "./store.js";
+import { Cadence, buildReminder } from "./cadence.js";
+import { resolveSettings, type PiTodoSettings } from "./types.js";
+import { buildTodoTool } from "./tool.js";
+import { registerTodoCommand } from "./command.js";
+import { SubagentTracker, wireSubagents, type Reconciler } from "./subagents.js";
+import { makeWidgetContent } from "./widget.js";
+import { computeDocDigest, emitLifecycleEvents } from "./events.js";
 import {
   createLifecycleJournal,
   createLifecycleRecord,
   parseUsageBinding,
   type UsageBinding,
-} from "./lifecycle-journal";
+} from "./lifecycle-journal.js";
 
 export default function setup(pi: ExtensionAPI): void {
   let settings = resolveSettings(readSettings());
   if (!settings.enabled) return;
 
-  const storePath = resolve(process.cwd(), settings.todoFile);
+  // `todoFile` comes from the PROJECT's own .pi/settings.json, so it is
+  // attacker-controlled input in a repo you just cloned. Unvalidated, a value
+  // like "../../.ssh/config" made this extension write outside the project on
+  // the first todo call. Confine it to the project root or refuse to load.
+  const projectRoot = resolve(process.cwd());
+  const storePath = resolveTodoPath(projectRoot, settings.todoFile);
+  if (!storePath) {
+    warnOnce(
+      pi,
+      `pi-todo: refusing to load — settings.todoFile ("${settings.todoFile}") must be a relative path inside the project.`,
+    );
+    return;
+  }
   const tracker = new SubagentTracker();
   const cadence = new Cadence();
   const usageReceipts = new Map<string, UsageBinding>();
   let currentUsage: UsageBinding[] = [];
+  let trusted = false;
   const lifecycleJournal = createLifecycleJournal(
-    resolve(process.cwd(), ".pi", "artifacts", "todo", "lifecycle"),
+    resolve(projectRoot, ".pi", "artifacts", "todo", "lifecycle"),
   );
 
   pi.events.on("pi-learning:v1:usage-receipts-issued", (payload: unknown) => {
@@ -61,6 +74,10 @@ export default function setup(pi: ExtensionAPI): void {
 
   const usageScope = {
     begin(ids: readonly string[]): void {
+      if (!trusted) {
+        currentUsage = [];
+        return;
+      }
       currentUsage = ids.map((id) => {
         const receipt = usageReceipts.get(id);
         if (!receipt) throw new Error(`Unknown or expired usage receipt: ${id}`);
@@ -83,7 +100,7 @@ export default function setup(pi: ExtensionAPI): void {
       prev,
       next,
     );
-    if (currentUsage.length === 0 || completed.length === 0) return;
+    if (!trusted || currentUsage.length === 0 || completed.length === 0) return;
 
     const prior = await lifecycleJournal.recover();
     let sequence = prior.at(-1)?.sequence ?? 0;
@@ -214,6 +231,10 @@ export default function setup(pi: ExtensionAPI): void {
   pi.on("session_start", (_e, ctx: ExtensionContext) => {
     // Re-read settings each session (toggles like widget/cadence may change).
     settings = resolveSettings(readSettings());
+    // Trust gate: an untrusted project's todo content must not be bound into a
+    // cross-package trust ledger. The todo tool itself keeps working locally.
+    // Fail closed if the host does not expose a trust verdict.
+    trusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false;
     store.refresh();
     // Ensure the watcher is running (idempotent) — it may have been stopped.
     store.startWatch();
@@ -243,14 +264,67 @@ export default function setup(pi: ExtensionAPI): void {
   });
 }
 
+/* ------------------------------ path safety ------------------------------ */
+
+/**
+ * Resolve `todoFile` against the project root, or return null if it escapes.
+ *
+ * Rejects absolute paths and any relative path that resolves outside the
+ * project root (`..` traversal, symlink-free string check). The extension
+ * refuses to load rather than silently falling back to the default, so a
+ * project that asked for something unsafe gets a visible refusal.
+ */
+export function resolveTodoPath(projectRoot: string, todoFile: string): string | null {
+  if (typeof todoFile !== "string" || todoFile.trim().length === 0) return null;
+  if (isAbsolute(todoFile)) return null;
+  const resolved = resolve(projectRoot, todoFile);
+  if (!isWithin(projectRoot, resolved)) return null;
+  return resolved;
+}
+
+function isWithin(root: string, candidate: string): boolean {
+  if (candidate === root) return false;
+  const rel = relative(root, candidate);
+  return rel.length > 0 && !rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel);
+}
+
+function warnOnce(pi: ExtensionAPI, message: string): void {
+  try {
+    (pi as unknown as { events?: { emit(channel: string, payload: unknown): void } }).events?.emit(
+      "pi-todo:v1:refused",
+      { version: 1, reason: message },
+    );
+  } catch {
+    // The event bus is best-effort; the console line below is the guarantee.
+  }
+  console.warn(message);
+}
+
 /* --------------------------- settings reader ----------------------------- */
 
-/** Read the `pi-todo` block from project `.pi/settings.json` (+ global fallback). */
+/**
+ * Read the `pi-todo` block from project `.pi/settings.json` (+ global fallback).
+ *
+ * `todoFile` is deliberately **operator-owned**: it is taken only from the
+ * global settings, never from the project's own file. Every other key is
+ * presentation or cadence and is safe for a project to set. A cloned repo must
+ * not get to choose which path this extension writes to — even a
+ * project-root-confined path is a file the repo picked, and the knob has no
+ * legitimate per-project use that the default does not already cover.
+ */
 function readSettings(): PiTodoSettings {
   const project = readJson(resolve(process.cwd(), ".pi/settings.json"));
   const global = readJson(resolve(homedir(), ".pi", "agent", "settings.json"));
-  const merged = { ...(global?.["pi-todo"] ?? {}), ...(project?.["pi-todo"] ?? {}) };
-  return merged as PiTodoSettings;
+  const globalBlock = (global?.["pi-todo"] ?? {}) as PiTodoSettings;
+  const projectBlock = { ...((project?.["pi-todo"] ?? {}) as PiTodoSettings) };
+  if (projectBlock.todoFile !== undefined) {
+    console.warn(
+      "pi-todo: ignoring project settings.todoFile — the todo path is operator-owned " +
+        "(set it in ~/.pi/agent/settings.json).",
+    );
+    delete projectBlock.todoFile;
+  }
+  return { ...globalBlock, ...projectBlock };
 }
 
 function readJson(path: string): Record<string, unknown> | undefined {

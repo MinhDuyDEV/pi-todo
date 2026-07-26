@@ -9,9 +9,10 @@
 import { Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
-import type { TodoStore } from "./store";
-import { itemsOf } from "./model";
-import type { ItemStatus, PiTodoSettings } from "./types";
+import type { TodoStore } from "./store.js";
+import { itemsOf, parsePhaseRef } from "./model.js";
+import type { ApplyResult } from "./store.js";
+import type { ItemStatus, PiTodoSettings, TodoPhase } from "./types.js";
 
 export interface TodoUsageScope {
   begin(usageIds: readonly string[]): void;
@@ -31,7 +32,8 @@ export function buildTodoTool(
       "Manage the structured markdown todo list at .pi/artifacts/TODO.md. " +
       "The file is the canonical store (human-readable, git-diffable). " +
       "Ops: view | add | start | done | drop | block | unblock | rm | move | edit | promote | deps. " +
-      "Refs: a phase title (fuzzy), `#id`, a 1-based index, or `phase:content`. " +
+      "Refs address ONE item: `#id`, a 1-based index, or fuzzy content (optionally scoped as `<phaseTitle>:<content>`). " +
+      "To close an entire phase and complete every open item in it, the ref must be `phase:<title>` — nothing else does that. " +
       "Always `view` after mutating to confirm the result.",
     promptGuidelines: [
       "Prefer the `todo` tool over hand-editing TODO.md so invariants (single-active-task) and atomic writes are enforced.",
@@ -41,7 +43,13 @@ export function buildTodoTool(
       op: Type.String({ description: "Operation: view|add|start|done|drop|block|unblock|rm|move|edit|promote|deps" }),
       phase: Type.Optional(Type.String({ description: "Phase title (for add/move/promote)" })),
       content: Type.Optional(Type.String({ description: "Item content (for add/edit)" })),
-      ref: Type.Optional(Type.String({ description: "Item reference: phase title | #id | 1-based index | phase:content" })),
+      ref: Type.Optional(
+        Type.String({
+          description:
+            "Item reference: #id | 1-based index | fuzzy content | <phaseTitle>:<content>. " +
+            "Prefix with `phase:` to address a whole phase (done: completes every open item in it).",
+        }),
+      ),
       status: Type.Optional(
         Type.Union([
           Type.Literal("pending"),
@@ -105,8 +113,14 @@ async function dispatch(store: TodoStore, settings: Required<PiTodoSettings>, p:
     }
     case "done": {
       if (!has("ref")) return "✗ `done` requires `ref`.";
-      const r = await store.done(String(p.ref));
-      return r.changed ? "✓ Completed. Next pending auto-promoted." : "✗ Could not find that item.";
+      const ref = String(p.ref);
+      const r = await store.done(ref);
+      if (!r.changed) {
+        return parsePhaseRef(ref) !== null
+          ? `✗ No phase matched "${ref}".`
+          : `✗ No item matched "${ref}". To close a whole phase use ref "phase:<title>".`;
+      }
+      return `✓ Completed.\n${describeChanges(r)}`;
     }
     case "drop": {
       if (!has("ref")) return "✗ `drop` requires `ref`.";
@@ -143,7 +157,7 @@ async function dispatch(store: TodoStore, settings: Required<PiTodoSettings>, p:
       return r.changed ? "✓ Promoted first pending → in_progress." : "✗ No pending item to promote.";
     }
     case "deps": {
-      const { validateDeps } = await import("./model");
+      const { validateDeps } = await import("./model.js");
       const issues = validateDeps(store.get().phases);
       if (!settings.dependencies) return "Dependencies are disabled (set pi-todo.dependencies: true to enable).";
       if (issues.length === 0) return "✓ No dependency issues (cycles, self-deps, dangling refs).";
@@ -162,7 +176,42 @@ async function dispatch(store: TodoStore, settings: Required<PiTodoSettings>, p:
   }
 }
 
-function viewText(phases: import("./types").TodoPhase[]): string {
+/**
+ * Enumerate exactly what a write changed.
+ *
+ * `todo done` can complete one item or, for a `phase:` ref, every open item in
+ * a phase. Reporting only "✓ Completed" made those indistinguishable, so a
+ * mistargeted ref silently closed a whole phase. The caller now sees the list.
+ */
+function describeChanges(result: ApplyResult): string {
+  const key = (phaseTitle: string, index: number) => `${phaseTitle} ${index}`;
+  const previous = new Map<string, { content: string; status: ItemStatus }>();
+  for (const phase of result.before.phases) {
+    itemsOf(phase).forEach((item, i) => {
+      previous.set(key(phase.title, i), { content: item.content, status: item.status });
+    });
+  }
+
+  const lines: string[] = [];
+  for (const phase of result.doc.phases) {
+    const wasPhase = result.before.phases.find((p) => p.title === phase.title);
+    if (wasPhase && wasPhase.status !== phase.status) {
+      lines.push(`  phase "${phase.title}": ${wasPhase.status} → ${phase.status}`);
+    }
+    itemsOf(phase).forEach((item, i) => {
+      const was = previous.get(key(phase.title, i));
+      if (was && was.status !== item.status) {
+        lines.push(`  [${was.status} → ${item.status}] ${item.content}`);
+      }
+    });
+  }
+  if (lines.length === 0) return "  (no item status changed)";
+  const shown = lines.slice(0, 25);
+  if (lines.length > shown.length) shown.push(`  … and ${lines.length - shown.length} more`);
+  return shown.join("\n");
+}
+
+function viewText(phases: TodoPhase[]): string {
   const lines: string[] = [];
   let n = 0;
   for (const phase of phases) {

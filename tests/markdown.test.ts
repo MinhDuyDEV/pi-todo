@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseMarkdown, serializeMarkdown, parseItemLine } from "../src/markdown";
-import { itemsOf } from "../src/model";
+import { parseMarkdown, serializeMarkdown, parseItemLine } from "../src/markdown.js";
+import { itemsOf } from "../src/model.js";
 
 const SAMPLE = `# Notes
 

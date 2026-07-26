@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { TodoStore } from "../src/store";
-import { buildTodoTool } from "../src/tool";
-import { renderWidgetLines } from "../src/widget";
-import { DEFAULT_SETTINGS } from "../src/types";
-import { parseMarkdown } from "../src/markdown";
+import { TodoStore } from "../src/store.js";
+import { buildTodoTool } from "../src/tool.js";
+import { renderWidgetLines } from "../src/widget.js";
+import { DEFAULT_SETTINGS } from "../src/types.js";
+import { parseMarkdown } from "../src/markdown.js";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 type ToolOut = { content: { type: string; text: string }[]; details: unknown };
 function textOf(r: { content: { type: string; text?: string }[] }): string {

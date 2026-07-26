@@ -6,7 +6,7 @@
  * (immutably replacing the touched phase); invariants (single-active-task,
  * optional DAG validation) are enforced here.
  */
-import type { BlockEntry, ItemStatus, PhaseStatus, TodoItem, TodoPhase } from "./types";
+import type { BlockEntry, ItemStatus, PhaseStatus, TodoItem, TodoPhase } from "./types.js";
 
 /* ----------------------------- matching utils ----------------------------- */
 
@@ -19,13 +19,26 @@ export function normalizeContent(s: string): string {
     .trim();
 }
 
-/** A similarity score in [0,1]; 0 = no match. Uses token containment + substring. */
+/** Below this length a substring is too weak to be evidence of a match. */
+const MIN_SUBSTRING_CHARS = 4;
+
+/**
+ * A similarity score in [0,1]; 0 = no match. Uses token containment + substring.
+ *
+ * Substring containment scores below an exact match and requires the needle to
+ * be a whole token of the haystack (or vice versa) and at least
+ * {@link MIN_SUBSTRING_CHARS} long. The old rule — any substring, either
+ * direction, flat 0.9 — meant a one-character ref like `"a"` scored 0.9 against
+ * every item and phase in the file, which is how `todo done a` could close an
+ * entire phase.
+ */
 export function similarity(haystack: string, needle: string): number {
   const h = normalizeContent(haystack);
   const n = normalizeContent(needle);
   if (!n) return 0;
   if (h === n) return 1;
-  if (h.includes(n) || n.includes(h)) return 0.9;
+  if (n.length >= MIN_SUBSTRING_CHARS && isTokenAlignedSubstring(h, n)) return 0.8;
+  if (h.length >= MIN_SUBSTRING_CHARS && isTokenAlignedSubstring(n, h)) return 0.8;
   const hTokens = new Set(h.split(" ").filter(Boolean));
   const nTokens = n.split(" ").filter(Boolean);
   if (nTokens.length === 0) return 0;
@@ -34,6 +47,16 @@ export function similarity(haystack: string, needle: string): number {
   // Return the raw token-overlap (no extra discount) so a needle that is a
   // token-subset/superset of the haystack still matches. Gated by the caller.
   return token >= 0.5 ? token : 0;
+}
+
+/** `needle` occurs in `haystack` on whole-token boundaries (both are normalized). */
+function isTokenAlignedSubstring(haystack: string, needle: string): boolean {
+  const at = haystack.indexOf(needle);
+  if (at < 0) return false;
+  const startsToken = at === 0 || haystack[at - 1] === " ";
+  const end = at + needle.length;
+  const endsToken = end === haystack.length || haystack[end] === " ";
+  return startsToken && endsToken;
 }
 
 /* ------------------------------- resolution -------------------------------- */
@@ -351,14 +374,36 @@ export function completePhase(phases: TodoPhase[], phaseTitle: string): TodoPhas
   return promoteNext(closed, closed[nextIdx]!.title);
 }
 
+/** Prefix that makes a ref mean "the whole phase" rather than "one item". */
+export const PHASE_REF_PREFIX = "phase:";
+
 /**
- * Complete an item OR a phase by ref. Item refs complete that item (and auto-promote the
- * next pending item in the same phase); phase refs mark the whole phase done and promote the
- * next active phase. Returns phases unchanged if `ref` matches neither an item nor a phase.
+ * Extract the phase title from an explicit `phase:<title>` ref.
+ *
+ * Closing a phase completes every open item in it, so it must never be
+ * something a ref falls back into. It used to: `done <ref>` tried the ref as an
+ * item, and on failure fuzzy-matched it against phase titles — combined with a
+ * flat 0.9 score for any substring, `done a` closed an entire phase and marked
+ * all of its items completed with no confirmation. The blast radius is now
+ * opt-in and spelled out at the call site.
+ */
+export function parsePhaseRef(ref: string): string | null {
+  const trimmed = ref.trim();
+  if (!trimmed.toLowerCase().startsWith(PHASE_REF_PREFIX)) return null;
+  const title = trimmed.slice(PHASE_REF_PREFIX.length).trim();
+  return title.length > 0 ? title : null;
+}
+
+/**
+ * Complete an item, or — only for an explicit `phase:<title>` ref — a whole
+ * phase. Returns phases unchanged if the ref resolves to neither.
  */
 export function completeRef(phases: TodoPhase[], ref: string): TodoPhase[] {
+  const phaseTitle = parsePhaseRef(ref);
+  if (phaseTitle !== null) {
+    return findPhase(phases, phaseTitle) ? completePhase(phases, phaseTitle) : phases;
+  }
   if (resolveRef(phases, ref)) return setItemStatus(phases, ref, "completed");
-  if (findPhase(phases, ref)) return completePhase(phases, ref);
   return phases;
 }
 
