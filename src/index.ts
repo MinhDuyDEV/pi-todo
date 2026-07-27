@@ -10,7 +10,7 @@
  *  - the optional bounded widget (oh-my-pi walking-viewport + pi-tasks
  *    crash-safe render), on by default; disable via settings.json `pi-todo.widget: false`
  *
- * Declared in package.json: `"pi": { "extensions": ["./src/index.ts"] }`.
+ * Declared in package.json: `"pi": { "extensions": ["./dist/index.js"] }`.
  */
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -40,10 +40,9 @@ export default function setup(pi: ExtensionAPI): void {
   let settings = resolveSettings(readSettings());
   if (!settings.enabled) return;
 
-  // `todoFile` comes from the PROJECT's own .pi/settings.json, so it is
-  // attacker-controlled input in a repo you just cloned. Unvalidated, a value
-  // like "../../.ssh/config" made this extension write outside the project on
-  // the first todo call. Confine it to the project root or refuse to load.
+  // `todoFile` is operator-owned (the project block is ignored by
+  // readSettings), but still validate it here so future configuration changes
+  // cannot turn it into a write primitive outside the project.
   const projectRoot = resolve(process.cwd());
   const storePath = resolveTodoPath(projectRoot, settings.todoFile);
   if (!storePath) {
@@ -53,7 +52,9 @@ export default function setup(pi: ExtensionAPI): void {
     );
     return;
   }
-  const tracker = new SubagentTracker();
+  const tracker = new SubagentTracker(
+    resolve(projectRoot, ".pi", "artifacts", "todo", "subagent-tasks.json"),
+  );
   const cadence = new Cadence();
   const usageReceipts = new Map<string, UsageBinding>();
   let currentUsage: UsageBinding[] = [];

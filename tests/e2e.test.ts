@@ -100,8 +100,8 @@ test("e2e: subagent reconcile marks matching item done + widget lights up while 
   assert.ok(linesBefore.some((l) => l.includes("wire up tool")), "matched item should render");
 
   // subagent settles successfully → reconcile
-  const changed = await store.reconcileSubagent("wire up the tool", true);
-  assert.equal(changed, true);
+  const result = await store.reconcileSubagent("wire up the tool", true);
+  assert.equal(result, "applied");
   const it = store.get().phases[0]!.body.find((e) => e.type === "item" && e.item.content === "wire up tool")!;
   assert.equal(it.type, "item");
   assert.equal(it.item.status, "completed");

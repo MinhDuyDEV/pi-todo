@@ -9,6 +9,13 @@ A **markdown-first** structured todo layer for the [Pi coding agent](https://git
 > - **oh-my-pi** — phased `TodoItem` model + `phasesToMarkdown`/`markdownToPhases` round-trip + single-op tool + single-active-task invariant + subagent reconciliation.
 > - **pi-tasks** — pure, unit-testable reminder **cadence** via the `context` hook (transient, never persisted) + optional DAG + crash-safe widget render.
 
+## What's new in 0.4.0
+
+- The typed `pi-subagents:task-started` / `task-settled` lifecycle is now the **authoritative** reconciliation path, tracked durably by task ID in `.pi/artifacts/todo/subagent-tasks.json` (atomic fsynced writes, inter-process lock, idempotent replay across restart, duplicate, and out-of-order delivery).
+- A TODO completes only when **both** the terminal and child-reported outcomes say `success`; blocked, partial, failed, reframed, or awaiting-decision work cannot complete it.
+- Native `tool_execution_start` / `tool_execution_end` is now a best-effort **compatibility fallback** (only the explicit terminal `done` phase is success).
+- Peer `@minhduydev/pi-core` moved to `^0.2.0`. See `CHANGELOG.md`.
+
 ## Why markdown-first?
 
 The file is always the truth a human can read, `grep`, `git diff`, and that survives context compaction. The structured model is a *projection*: tools parse the file → mutate the model → enforce invariants → atomically write back. You can hand-edit the file (or use `bash`, `/todo edit`) and `pi-todo` live-refreshes via `fs.watch`.
@@ -19,7 +26,7 @@ The file is always the truth a human can read, `grep`, `git diff`, and that surv
 - **`/todo` slash command** — same ops + `/todo edit` (opens `$EDITOR`) and `/todo refresh`.
 - **Reminder cadence** — a transient nudge via the `context` hook every N turns (shorter while an item is `in_progress`), suggesting the next step. Never persisted.
 - **Single-active-task invariant** — only one `in_progress` per phase; `done` auto-promotes the next pending.
-- **Subagent reconciliation** — when a delegated subagent (via the native `task` tool) finishes, matching open items are marked completed (success) or reverted to pending + blocker note (failure). Hooks Pi's standard `tool_execution_start`/`tool_execution_end` events for the `task` tool (correlated by `toolCallId`). `@minhduydev/pi-subagents` also emits `pi-subagents:task-started`/`task-settled` on the eventbus — an earlier version of this README wrongly said it did not, which is why matching is currently done by fuzzy `description` string rather than by `taskId`; moving to the typed events is planned. Subagents never write `TODO.md` directly — the parent's `TodoStore` does, in the host process.
+- **Subagent reconciliation** — the typed `pi-subagents:task-started`/`task-settled` event pair is authoritative and tracked durably by task ID in `.pi/artifacts/todo/subagent-tasks.json` across restart, duplicate delivery, and out-of-order delivery. The tracker uses atomic, fsynced writes and a small inter-process lock; a terminal event stays pending until the parent TODO mutation is acknowledged. A TODO completes only when both terminal and child-reported outcomes explicitly say `success`; blocked, partial, failed, reframed, or awaiting-decision work cannot complete it. A replay after a crash is recognized as already applied, while an unmatched description remains retryable instead of being silently acknowledged. Pi's native `tool_execution_start`/`tool_execution_end` remains a best-effort compatibility fallback for older task runtimes and only treats the explicit terminal `done` phase as success. Subagents never write `TODO.md` directly — the parent's `TodoStore` does, in the host process.
 - **Optional widget** — a bounded below-editor widget: root header (`Todos · 2/8`), one **focused** phase expanded (with matched lighting — a pending item glows when a live subagent works on it), the rest collapsed to one-line summaries, hard-capped by `widgetMaxLines` so it can never crush the editor; fully-done phases are hidden. Density modes: `compact` (one line), `focused` (default), `detailed`. On by default; disable via `pi-todo.widget: false`.
 - **Optional dependencies** — `blocks`/`blockedBy` annotations + `/todo deps` cycle/dangling validation. Opt-in via `pi-todo.dependencies: true`.
 
@@ -51,10 +58,10 @@ import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
 | key | default | description |
 |---|---|---|
 | `enabled` | `true` | Master switch |
-| `todoFile` | `.pi/artifacts/TODO.md` | Canonical file (relative to cwd or absolute) |
+| `todoFile` | `.pi/artifacts/TODO.md` | Canonical file; a non-empty relative path contained within the project (absolute and escaping paths are refused) |
 | `reminderTurns` | `6` | Idle reminder cadence (turns) |
 | `reminderTurnsActive` | `3` | Active (in_progress) reminder cadence |
-| `widget` | `false` | Enable the below-editor widget |
+| `widget` | `true` | Enable the below-editor widget |
 | `widgetPlacement` | `"belowEditor"` | `"aboveEditor"` or `"belowEditor"` |
 | `widgetItemsPerPhase` | `5` | Max items shown under the **focused** phase |
 | `widgetDensity` | `"focused"` | `"compact"` (one line) \u00b7 `"focused"` (one phase expanded, rest collapsed) \u00b7 `"detailed"` (focused with higher caps) |
@@ -65,14 +72,14 @@ import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
 
 ## Install (pin into a Pi project)
 
-`pi-todo` ships TypeScript source (entry `./src/index.ts`), loaded by Pi via `tsx`/`jiti` — no build step. Pin it in the project's `.pi/settings.json` `packages` array, by npm package, git URL+sha, or local path:
+`pi-todo` ships compiled ESM and declarations under `dist`; the Pi extension entry is `./dist/index.js`. Pin it in the project's `.pi/settings.json` `packages` array by an exact registry version **only after that version is published**, a git URL+sha, or a local path:
 
 ```jsonc
 {
   "packages": [
-    "@minhduydev/pi-todo",                                   // npm (recommended)
-    // "git+https://github.com/minhduydev/pi-todo.git#<sha>" // or a published git ref
-    // "../pi-todo"                                          // or a local path (dev)
+    // "npm:@minhduydev/pi-todo@0.4.0",                      // only when this exact release exists in your registry
+    "git+https://github.com/minhduydev/pi-todo.git#<sha>",  // immutable source ref
+    // "../pi-todo"                                          // local development path
   ],
   "pi-todo": { "enabled": true, "widget": true }
 }
@@ -80,14 +87,14 @@ import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
 
 > The npm package name is `@minhduydev/pi-todo`; the settings block stays `pi-todo` (the extension reads that key directly).
 
-Peer deps (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`) are provided by the host Pi at runtime. The manifest declares `"pi": { "extensions": ["./src/index.ts"] }`.
+Peer deps (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`, `@minhduydev/pi-core`) are provided by the host Pi at runtime. The manifest declares `"pi": { "extensions": ["./dist/index.js"] }`.
 
-## Coexistence with the built-in todo widget/nudge
+## Coexistence with the pi-harness TUI todo surface
 
-The pi-harness ships a built-in `amp-todos` widget (`.pi/extensions/tui/`) and a `todo.ts` nudge that both watch `.pi/artifacts/TODO.md`. To avoid a double widget / double nudge when adopting `pi-todo`:
+The pi-harness TUI extension can render an `amp-todos` widget and inject an active-TODO reminder from the same `.pi/artifacts/TODO.md`. Both are controlled together by `piTui.todosWidget`; the canonical harness settings set it to `false` when `pi-todo` owns this surface.
 
 - **Widget**: `pi-todo`'s widget is **bounded** — one focused phase expanded, the rest collapsed to a line each, hard-capped by `widgetMaxLines`; fully-done phases are hidden so finished work never wastes a line. To make it the sole below-editor todo widget, disable the built-in `amp-todos` via `piTui.todosWidget: false` in `.pi/settings.json` (pi-harness). Alternatively set `pi-todo.widget: false` and keep `amp-todos`.
-- **Cadence**: `pi-todo`'s `context`-hook reminder overlaps the built-in `todo.ts` nudge. Set `pi-todo.reminderTurns` high (or extend `enabled: false` for the cadence) if you keep `todo.ts`, or remove `todo.ts` when adopting `pi-todo`.
+- **Cadence**: setting `piTui.todosWidget: false` also disables the TUI's active-TODO prompt injection, leaving `pi-todo.reminderTurns` as the sole reminder cadence.
 
 ## Ops vs the `artifact-format` append-only rule
 
@@ -104,10 +111,10 @@ Pure modules (`markdown`, `model`, `cadence`, `widget` render) have **zero** Pi 
 
 ## What we deliberately reject
 
-- **Opaque JSON as master store** — breaks human-readable, git-diffable, survives-compaction. JSON is never the truth.
+- **Opaque JSON as TODO master store** — breaks human-readable, git-diffable, survives-compaction. The auxiliary lifecycle tracker is JSON, but TODO.md remains the only task-content source of truth.
 - **Subagents writing artifacts** — the parent owns artifacts; `pi-todo` only *reflects* delegation and reconciles on events.
 - **A new file format** — extends the existing `### block + status:` format; never replaces it.
-- **Always-on widget/extra UI** — opt-in only.
+- **Mandatory or unbounded widget/extra UI** — the bounded widget can always be disabled with `pi-todo.widget: false`.
 
 ## License
 

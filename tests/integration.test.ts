@@ -9,7 +9,13 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createTodoReplayPort } from "../src/replay.js";
@@ -94,6 +100,20 @@ status: active | updated: 2026-07-25
   } finally {
     process.chdir(old);
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function waitFor<T>(
+  read: () => T,
+  matches: (value: T) => boolean,
+  timeoutMs = 2_000,
+): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    const value = read();
+    if (matches(value)) return value;
+    if (Date.now() >= deadline) throw new Error("waitFor timed out");
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 
@@ -233,9 +253,11 @@ test("real-session load: subagent reconcile (foreground done) marks item complet
     // foreground task: start → end with phase "done"
     pi.dispatch("tool_execution_start", { toolCallId: "t1", toolName: "task", args: { description: "write the tests" } }, undefined);
     pi.dispatch("tool_execution_end", { toolCallId: "t1", toolName: "task", result: { details: { phase: "done" } }, isError: false }, undefined);
-    const { readFileSync } = await import("node:fs");
-    await new Promise((r) => setTimeout(r, 30));
-    const onDisk = readFileSync(join(process.cwd(), ".pi", "artifacts", "TODO.md"), "utf8");
+    const todoPath = join(process.cwd(), ".pi", "artifacts", "TODO.md");
+    const onDisk = await waitFor(
+      () => readFileSync(todoPath, "utf8"),
+      (contents) => contents.includes("- [x] write tests"),
+    );
     assert.ok(onDisk.includes("- [x] write tests"), "foreground done → item completed on disk");
   });
 });
@@ -248,7 +270,6 @@ test("real-session load: background task (phase running) is NOT marked completed
     pi.dispatch("tool_execution_start", { toolCallId: "b1", toolName: "task", args: { description: "write the tests" } }, undefined);
     pi.dispatch("tool_execution_end", { toolCallId: "b1", toolName: "task", result: { details: { phase: "running" } }, isError: false }, undefined);
     await new Promise((r) => setTimeout(r, 30));
-    const { readFileSync } = await import("node:fs");
     const onDisk = readFileSync(join(process.cwd(), ".pi", "artifacts", "TODO.md"), "utf8");
     assert.ok(!onDisk.includes("- [x] write tests"), "background task must not be completed at launch");
     assert.ok(onDisk.includes("- [/] write tests"), "background task item stays in_progress");

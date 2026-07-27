@@ -74,8 +74,8 @@ test("TodoStore.apply: changed=false when no-op", async () => {
 
 test("TodoStore.reconcileSubagent: success marks matching item completed", async () => {
   const { store, file } = setup(DOC);
-  const changed = await store.reconcileSubagent("write the tests", true);
-  assert.equal(changed, true);
+  const result = await store.reconcileSubagent("write the tests", true);
+  assert.equal(result, "applied");
   const fresh = new TodoStore(file);
   const it = fresh.get().phases[0]!.body.find(
     (e): e is Extract<typeof e, { type: "item" }> => e.type === "item" && e.item.content === "write tests",
@@ -91,8 +91,8 @@ status: active
 - [/] build feature
 `,
   );
-  const changed = await store.reconcileSubagent("build the feature", false, "syntax error");
-  assert.equal(changed, true);
+  const result = await store.reconcileSubagent("build the feature", false, "syntax error");
+  assert.equal(result, "applied");
   const fresh = new TodoStore(file);
   const entry = fresh.get().phases[0]!.body.find(
     (e): e is Extract<typeof e, { type: "item" }> => e.type === "item" && e.item.content === "build feature",
@@ -113,8 +113,8 @@ status: active
   );
   // The description names #3 explicitly; its TEXT resembles items #1/#2. The
   // ref is the contract — text similarity must not widen the blast radius.
-  const changed = await store.reconcileSubagent("refactor the auth layer (#3)", true);
-  assert.equal(changed, true);
+  const result = await store.reconcileSubagent("refactor the auth layer (#3)", true);
+  assert.equal(result, "applied");
   const items = new TodoStore(file)
     .get()
     .phases[0]!.body.filter((e): e is Extract<typeof e, { type: "item" }> => e.type === "item")
@@ -137,8 +137,8 @@ status: active
   );
   // Every item clears the similarity bar; the old behavior completed ALL of
   // them from one subagent result.
-  const changed = await store.reconcileSubagent("extract the token parser for auth", true);
-  assert.equal(changed, true);
+  const result = await store.reconcileSubagent("extract the token parser for auth", true);
+  assert.equal(result, "applied");
   const items = new TodoStore(file)
     .get()
     .phases[0]!.body.filter((e): e is Extract<typeof e, { type: "item" }> => e.type === "item")
@@ -151,8 +151,8 @@ test("TodoStore.reconcileSubagent: an unresolvable #id completes nothing", async
   const { store, file } = setup(DOC);
   // The description carries a ref, so fuzzy must NOT engage — a typo'd ref
   // silently completing a lookalike item is the failure mode being removed.
-  const changed = await store.reconcileSubagent("write the tests (#99)", true);
-  assert.equal(changed, false);
+  const result = await store.reconcileSubagent("write the tests (#99)", true);
+  assert.equal(result, "unmatched");
   const items = new TodoStore(file)
     .get()
     .phases[0]!.body.filter((e): e is Extract<typeof e, { type: "item" }> => e.type === "item")
@@ -161,6 +161,141 @@ test("TodoStore.reconcileSubagent: an unresolvable #id completes nothing", async
   assert.deepEqual(
     items.map((it) => [it.content, it.status]),
     [["write tests", "pending"], ["wire up tool", "pending"], ["scaffold", "completed"]],
+  );
+});
+
+test("TodoStore.reconcileSubagent: durable retry distinguishes already-applied from unmatched", async () => {
+  const { store } = setup(DOC);
+  assert.equal(
+    await store.reconcileSubagent("write the tests", true),
+    "applied",
+  );
+  assert.equal(
+    await store.reconcileSubagent("write the tests", true),
+    "already-applied",
+    "a crash after the TODO write can be acknowledged on replay",
+  );
+  assert.equal(
+    await store.reconcileSubagent("does not exist", true),
+    "unmatched",
+    "a successful no-op call must not be mistaken for an acknowledgement",
+  );
+});
+
+test("TodoStore.reconcileSubagent: empty and oversized native descriptions fail closed", async () => {
+  const { store } = setup(DOC);
+  assert.equal(await store.reconcileSubagent("", true), "unmatched");
+  assert.equal(await store.reconcileSubagent("x".repeat(4_001), true), "unmatched");
+  const statuses = store.get().phases[0]!.body
+    .filter((entry): entry is Extract<typeof entry, { type: "item" }> => entry.type === "item")
+    .map((entry) => entry.item.status);
+  assert.deepEqual(statuses, ["pending", "pending", "completed"]);
+});
+
+test("TodoStore.reconcileSubagent: repeated failure result is idempotently acknowledged", async () => {
+  const { store } = setup(
+    `### A
+status: active
+
+- [/] build feature
+`,
+  );
+  assert.equal(
+    await store.reconcileSubagent("build feature", false, "compile failed"),
+    "applied",
+  );
+  assert.equal(
+    await store.reconcileSubagent("build feature", false, "compile failed"),
+    "already-applied",
+  );
+});
+
+test("TodoStore.reconcileSubagent: failure notes are redacted before persistence", async () => {
+  const { store } = setup(
+    `### A
+status: active
+
+- [/] build feature
+`,
+  );
+  const secret = "abcdefghijklmnop";
+  assert.equal(
+    await store.reconcileSubagent(
+      "build feature",
+      false,
+      `compile failed api_key=${secret}`,
+    ),
+    "applied",
+  );
+  const item = store.get().phases[0]!.body.find(
+    (entry): entry is Extract<typeof entry, { type: "item" }> => entry.type === "item",
+  )!.item;
+  assert.equal(item.blockerNote, "compile failed [REDACTED]");
+  assert.equal(item.blockerNote?.includes(secret), false);
+});
+
+test("TodoStore.reconcileSubagent: mixed missing refs fail closed without partial writes", async () => {
+  const { store, file } = setup(
+    `### A
+status: active
+
+- [ ] (#1) first
+- [ ] (#2) second
+`,
+  );
+  assert.equal(
+    await store.reconcileSubagent("finish #1 and #missing", true),
+    "unmatched",
+  );
+  const items = new TodoStore(file)
+    .get()
+    .phases[0]!.body.filter((e): e is Extract<typeof e, { type: "item" }> => e.type === "item");
+  assert.deepEqual(items.map((entry) => entry.item.status), ["pending", "pending"]);
+});
+
+test("TodoStore.reconcileSubagent: duplicate refs and fuzzy ties are ambiguous", async () => {
+  const duplicate = setup(
+    `### A
+status: active
+
+- [ ] (#same) first
+- [ ] (#same) second
+`,
+  );
+  assert.equal(
+    await duplicate.store.reconcileSubagent("finish #same", true),
+    "unmatched",
+  );
+
+  const fuzzy = setup(
+    `### A
+status: active
+
+- [ ] identical work
+- [ ] identical work
+`,
+  );
+  assert.equal(
+    await fuzzy.store.reconcileSubagent("identical work", true),
+    "unmatched",
+  );
+});
+
+test("TodoStore.reconcileSubagent: an operator-terminal item supersedes a late task result", async () => {
+  const { store } = setup(
+    `### A
+status: active
+
+- [-] (#1) cancelled by operator
+`,
+  );
+  assert.equal(
+    await store.reconcileSubagent("finish #1", true),
+    "superseded",
+  );
+  assert.equal(
+    store.get().phases[0]!.body.find((entry) => entry.type === "item")?.item.status,
+    "abandoned",
   );
 });
 

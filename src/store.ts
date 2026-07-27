@@ -30,9 +30,10 @@
  */
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, statSync, watch, type FSWatcher, type Stats } from "node:fs";
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, open, rename, unlink } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { lock } from "proper-lockfile";
+import { redactSecrets } from "@minhduydev/pi-core";
 
 import { parseMarkdown, serializeMarkdown, type TodoDoc } from "./markdown.js";
 import {
@@ -60,6 +61,21 @@ import type { ItemStatus, TodoItem, TodoPhase } from "./types.js";
  * in it, and "✓ Completed" alone hid that blast radius.
  */
 export type ApplyResult = { doc: TodoDoc; changed: boolean; before: TodoDoc };
+
+/**
+ * Result of correlating a terminal delegated task with the canonical TODO.
+ *
+ * This is intentionally richer than a mutation boolean. A crash can happen
+ * after TODO.md is durably replaced but before the lifecycle tracker records
+ * its acknowledgement. On restart the same settlement must be distinguishable
+ * from a genuinely unmatched description so the former can be acknowledged
+ * and the latter remains retryable.
+ */
+export type SubagentReconcileResult =
+  | "applied"
+  | "already-applied"
+  | "superseded"
+  | "unmatched";
 
 const EMPTY_DOC: TodoDoc = { preamble: [], phases: [] };
 
@@ -252,23 +268,45 @@ export class TodoStore {
   }
 
   /**
-   * Atomic write with a UNIQUE temp file per call.
+   * Durable atomic write with a UNIQUE temp file per call.
    *
    * The name is a UUID, not `${pid}-${seq}`: two `TodoStore` instances in the
    * same process each start their own `seq` at 0, so their first writes used to
    * pick the identical temp path and race — one `writeFile` clobbering the
    * other's bytes, or the loser's `rename` hitting ENOENT.
+   *
+   * The temp file is fsynced before rename and the containing directory is
+   * fsynced afterwards. Rename alone prevents torn readers but does not make
+   * the replacement durable across a machine crash or power loss.
    */
   private async write(doc: TodoDoc): Promise<void> {
     const md = serializeMarkdown(doc);
-    await mkdir(dirname(this.path), { recursive: true });
-    const tmp = this.tempPath();
-    await writeFile(tmp, md, "utf8");
-    await rename(tmp, this.path);
+    await this.durableReplace(md);
   }
 
   private tempPath(): string {
     return `${this.path}.tmp-${randomUUID()}`;
+  }
+
+  private async durableReplace(contents: string): Promise<void> {
+    const directory = dirname(this.path);
+    await mkdir(directory, { recursive: true });
+    const tmp = this.tempPath();
+    let renamed = false;
+    try {
+      const handle = await open(tmp, "wx", 0o666);
+      try {
+        await handle.writeFile(contents, "utf8");
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      await rename(tmp, this.path);
+      renamed = true;
+      await syncDirectory(directory);
+    } finally {
+      if (!renamed) await unlink(tmp).catch(() => undefined);
+    }
   }
 
   /**
@@ -282,10 +320,7 @@ export class TodoStore {
       if (expectedVersion !== undefined && this.versionKey() !== expectedVersion) {
         throw new Error("TODO.md changed since it was read (refusing to overwrite)");
       }
-      await mkdir(dirname(this.path), { recursive: true });
-      const tmp = this.tempPath();
-      await writeFile(tmp, md, "utf8");
-      await rename(tmp, this.path);
+      await this.durableReplace(md);
       const prev = this.cache;
       this.cache = this.readSync();
       this.onDocChange?.(this.cache);
@@ -354,9 +389,36 @@ export class TodoStore {
    * Reconcile a subagent's outcome: on success, mark matching open items
    * completed; on failure, revert a matching in_progress item to pending and
    * record the blocker note. Serialized with other mutations via apply().
+   *
+   * Explicit refs are fail-closed: every requested id must resolve exactly
+   * once, otherwise nothing is changed. Ref-less descriptions choose one
+   * unambiguous best open match, falling back to a terminal match only so a
+   * post-write crash can be acknowledged idempotently.
    */
-  async reconcileSubagent(description: string, success: boolean, note?: string): Promise<boolean> {
-    const r = await this.apply((phases) => {
+  async reconcileSubagent(
+    description: string,
+    success: boolean,
+    note?: string,
+  ): Promise<SubagentReconcileResult> {
+    // Native fallback callers do not pass through pi-core's bounded parser.
+    // Refuse empty/oversized descriptions here rather than letting an empty
+    // substring match every TODO item.
+    if (
+      typeof description !== "string" ||
+      typeof success !== "boolean" ||
+      (note !== undefined && typeof note !== "string") ||
+      description.length === 0 ||
+      description.length > 4_000 ||
+      (note !== undefined && note.length > 1_000)
+    ) {
+      return "unmatched";
+    }
+    const safeNote = note === undefined ? undefined : redactSecrets(note.normalize("NFKC"));
+    let result: SubagentReconcileResult = "unmatched";
+    await this.apply((phases) => {
+      // `apply()` may retry after an out-of-band writer wins the CAS race.
+      // Recompute the result against the attempt that will actually persist.
+      result = "unmatched";
       // Explicit `#id` refs in the task description are THE correlation
       // (roadmap 25): "Fix the parser (#3)" reconciles exactly item #3.
       // Fuzzy description matching remains only as a fallback for tasks that
@@ -370,49 +432,74 @@ export class TodoStore {
 
       const targets = new Set<TodoItem>();
       if (explicitIds.size > 0) {
+        const byId = new Map<string, TodoItem[]>();
+        for (const id of explicitIds) byId.set(id, []);
         for (const phase of phases) {
           for (const entry of phase.body) {
-            if (entry.type !== "item") continue;
-            if (!entry.item.id || !explicitIds.has(entry.item.id)) continue;
-            if (!reconcilable(entry.item)) continue;
-            targets.add(entry.item);
+            if (entry.type !== "item" || !entry.item.id) continue;
+            byId.get(entry.item.id)?.push(entry.item);
           }
         }
+        // Missing or duplicated ids are ambiguous. Do not partially reconcile
+        // a multi-ref task and do not widen to fuzzy text.
+        if ([...byId.values()].some((matches) => matches.length !== 1)) {
+          return phases;
+        }
+        for (const matches of byId.values()) targets.add(matches[0]!);
       } else {
-        let best: { item: TodoItem; score: number } | undefined;
+        const openCandidates: Array<{ item: TodoItem; score: number }> = [];
+        const terminalCandidates: Array<{ item: TodoItem; score: number }> = [];
         for (const phase of phases) {
           for (const entry of phase.body) {
             if (entry.type !== "item") continue;
             const it = entry.item;
-            if (!reconcilable(it)) continue;
             if (!fuzzyMatchDesc(it.content, description)) continue;
             const score = similarity(it.content, description);
-            if (!best || score > best.score) best = { item: it, score };
+            (reconcilable(it) ? openCandidates : terminalCandidates).push({ item: it, score });
           }
         }
-        if (best) targets.add(best.item);
+        const best = unambiguousBest(
+          openCandidates.length > 0 ? openCandidates : terminalCandidates,
+        );
+        if (best) targets.add(best);
       }
       if (targets.size === 0) return phases;
 
-      return phases.map((phase) => ({
+      let changed = false;
+      let superseded = false;
+      const next = phases.map((phase) => ({
         ...phase,
-        body: phase.body.map((entry) =>
-          entry.type === "item" && targets.has(entry.item)
-            ? {
-                type: "item" as const,
-                item: success
-                  ? { ...entry.item, status: "completed" as const }
-                  : {
-                      ...entry.item,
-                      status: "pending" as const,
-                      blockerNote: note ?? entry.item.blockerNote,
-                    },
-              }
-            : entry,
-        ),
+        body: phase.body.map((entry) => {
+          if (entry.type !== "item" || !targets.has(entry.item)) return entry;
+          if (!reconcilable(entry.item)) {
+            const alreadyApplied = success && entry.item.status === "completed";
+            if (!alreadyApplied) superseded = true;
+            return entry;
+          }
+          const item = success
+            ? { ...entry.item, status: "completed" as const }
+            : {
+                ...entry.item,
+                status: "pending" as const,
+                blockerNote: safeNote ?? entry.item.blockerNote,
+              };
+          if (
+            item.status !== entry.item.status ||
+            item.blockerNote !== entry.item.blockerNote
+          ) {
+            changed = true;
+          }
+          return { type: "item" as const, item };
+        }),
       }));
+      result = changed
+        ? "applied"
+        : superseded
+          ? "superseded"
+          : "already-applied";
+      return next;
     }, { autoPromote: false });
-    return r.changed;
+    return result;
   }
 
   /* ------------------------------- watching -------------------------------- */
@@ -445,6 +532,31 @@ export class TodoStore {
 }
 
 import { normalizeContent, similarity } from "./model.js";
+
+async function syncDirectory(directory: string): Promise<void> {
+  let handle;
+  try {
+    handle = await open(directory, "r");
+    await handle.sync();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    // Some filesystems/platforms do not permit opening or syncing directories.
+    // The file itself was still fsynced before rename.
+    if (code !== "EINVAL" && code !== "ENOTSUP" && code !== "EISDIR") throw error;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+function unambiguousBest(
+  candidates: ReadonlyArray<{ item: TodoItem; score: number }>,
+): TodoItem | undefined {
+  if (candidates.length === 0) return undefined;
+  const highest = Math.max(...candidates.map((candidate) => candidate.score));
+  const best = candidates.filter((candidate) => candidate.score === highest);
+  return best.length === 1 ? best[0]!.item : undefined;
+}
+
 function fuzzyMatchDesc(content: string, description: string): boolean {
   const c = normalizeContent(content);
   const d = normalizeContent(description);

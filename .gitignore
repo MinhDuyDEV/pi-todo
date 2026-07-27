@@ -10,3 +10,6 @@ node_modules/
 *.lock
 *.tmp-*
 dist/
+
+# Local agent harness state
+.omc/

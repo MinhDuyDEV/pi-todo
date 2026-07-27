@@ -18,6 +18,10 @@ async function manifest(): Promise<PackageManifest> {
   return JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8")) as PackageManifest;
 }
 
+async function readme(): Promise<string> {
+  return readFile(new URL("../README.md", import.meta.url), "utf8");
+}
+
 /**
  * The whole `pi-*` set must resolve ONE Pi host. An open `>=0.81.1` on three
  * packages and a `^0.81.1` on a fourth makes Pi 0.82 install cleanly for three
@@ -62,4 +66,17 @@ test("the canonical Markdown parser is exposed through a public subpath", async 
   assert.ok(markdown, "./markdown export must remain public for integrations");
   assert.equal(markdown.import, "./dist/markdown.js");
   assert.equal(markdown.types, "./dist/markdown.d.ts");
+});
+
+test("README install/default claims stay aligned with the published manifest", async () => {
+  const [pkg, docs] = await Promise.all([manifest(), readme()]);
+  assert.match(docs, /ships compiled ESM[\s\S]*`dist`/);
+  assert.match(docs, /extension entry is `\.\/dist\/index\.js`/);
+  assert.match(docs, /\| `widget` \| `true` \|/);
+  assert.match(docs, new RegExp(`npm:@minhduydev/pi-todo@${pkg.version.replaceAll(".", "\\.")}`));
+  assert.match(docs, /subagent-tasks\.json/);
+  assert.match(docs, /unmatched description remains retryable/);
+  assert.match(docs, /only treats the explicit terminal `done` phase as success/);
+  assert.doesNotMatch(docs, /entry `\.\/src\/index\.ts`|ships TypeScript source/);
+  assert.doesNotMatch(docs, /todo\.ts nudge|moving to the typed events is planned/);
 });

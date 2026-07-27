@@ -1,6 +1,6 @@
 {
   "name": "@minhduydev/pi-todo",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Durable markdown todo manager for Pi Coding Agent \u2014 structured TODO.md phases, a `todo` tool + `/todo` command, optional TUI widget, and single-active-task invariants.",
   "type": "module",
   "main": "./dist/index.js",
@@ -80,7 +80,7 @@
     "@earendil-works/pi-coding-agent": ">=0.81.1 <0.82.0",
     "@earendil-works/pi-tui": ">=0.81.1 <0.82.0",
     "typebox": "1.1.38",
-    "@minhduydev/pi-core": "^0.1.0"
+    "@minhduydev/pi-core": "^0.2.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.81.1",
