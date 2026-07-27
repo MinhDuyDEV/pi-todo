@@ -28,8 +28,10 @@ test("Pi peer and development ranges pin one host minor across the pi-* set", as
   const pkg = await manifest();
   assert.equal(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.81.1 <0.82.0");
   assert.equal(pkg.peerDependencies?.["@earendil-works/pi-tui"], ">=0.81.1 <0.82.0");
-  assert.equal(pkg.devDependencies?.["@earendil-works/pi-coding-agent"], "^0.81.1");
-  assert.equal(pkg.devDependencies?.["@earendil-works/pi-tui"], "^0.81.1");
+  assert.equal(pkg.peerDependencies?.typebox, "1.1.38");
+  assert.equal(pkg.devDependencies?.["@earendil-works/pi-coding-agent"], "0.81.1");
+  assert.equal(pkg.devDependencies?.["@earendil-works/pi-tui"], "0.81.1");
+  assert.equal(pkg.devDependencies?.typebox, "1.1.38");
   assert.equal(pkg.engines?.node, ">=22.19.0", "engines must match the rest of the pi-* set");
 });
 
@@ -52,4 +54,12 @@ test("every advertised entry point resolves to compiled output, not raw TypeScri
   }
   assert.ok(pkg.files?.includes("dist"), "dist must be published");
   assert.ok(!pkg.files?.includes("src"), "raw src must not be published");
+});
+
+test("the canonical Markdown parser is exposed through a public subpath", async () => {
+  const pkg = await manifest();
+  const markdown = pkg.exports?.["./markdown"];
+  assert.ok(markdown, "./markdown export must remain public for integrations");
+  assert.equal(markdown.import, "./dist/markdown.js");
+  assert.equal(markdown.types, "./dist/markdown.d.ts");
 });

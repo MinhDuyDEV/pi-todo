@@ -39,6 +39,13 @@ status: active | updated: 2026-07-25
 
 The `status: X | updated: Y` combined line (with `|` separator) is the canonical pi-harness `artifact-format` form and round-trips byte-for-byte. Accepts the pi-harness markers (`[ ]`, `[x]`) and the oh-my-pi markers (`[/]`, `[-]`, `>` in_progress, `~` abandoned, `[!]` blocked). Free-form prose and blank lines between items are preserved losslessly (idempotent round-trip). A trailing `#id` (`(#3)`) gives a stable reference for dependencies when content is long or duplicated.
 
+Integrations that only need to read the canonical file should use the public
+parser instead of reimplementing Markdown recognition:
+
+```ts
+import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
+```
+
 ## Settings (`pi-todo` block in `.pi/settings.json`)
 
 | key | default | description |
