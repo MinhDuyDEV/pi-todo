@@ -4,6 +4,11 @@ All notable changes to `@minhduydev/pi-todo` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.2] - 2026-07-29
+
+### Fixed
+- Align the README install example with the manifest's supported pi-core range so the package release gate can validate and publish the compatibility release.
+
 ## [0.4.1] - 2026-07-29
 
 ### Changed

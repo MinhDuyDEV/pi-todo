@@ -9,7 +9,7 @@ A **markdown-first** structured todo layer for the [Pi coding agent](https://git
 > - **oh-my-pi** — phased `TodoItem` model + `phasesToMarkdown`/`markdownToPhases` round-trip + single-op tool + single-active-task invariant + subagent reconciliation.
 > - **pi-tasks** — pure, unit-testable reminder **cadence** via the `context` hook (transient, never persisted) + optional DAG + crash-safe widget render.
 
-## What's new in 0.4.1
+## What's new in 0.4.2
 
 - Widen the `@minhduydev/pi-core` peer range to `>=0.2.0 <0.4.0`.
 - No runtime behavior changes: the task-lifecycle contract used by pi-todo is unchanged in the additive core 0.3 release.
@@ -77,7 +77,7 @@ import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
 ```jsonc
 {
   "packages": [
-    // "npm:@minhduydev/pi-todo@0.4.0",                      // only when this exact release exists in your registry
+    // "npm:@minhduydev/pi-todo@0.4.2",                      // only when this exact release exists in your registry
     "git+https://github.com/minhduydev/pi-todo.git#<sha>",  // immutable source ref
     // "../pi-todo"                                          // local development path
   ],
