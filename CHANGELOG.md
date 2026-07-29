@@ -4,6 +4,11 @@ All notable changes to `@minhduydev/pi-todo` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-07-29
+
+### Changed
+- Widen the `@minhduydev/pi-core` peer range to `>=0.2.0 <0.4.0` so the unchanged task-lifecycle contract remains compatible with the additive core 0.3 release.
+
 ## [0.4.0] - 2026-07-27
 
 Subagent reconciliation is now driven by the typed

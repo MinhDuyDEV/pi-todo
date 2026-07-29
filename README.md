@@ -9,12 +9,12 @@ A **markdown-first** structured todo layer for the [Pi coding agent](https://git
 > - **oh-my-pi** — phased `TodoItem` model + `phasesToMarkdown`/`markdownToPhases` round-trip + single-op tool + single-active-task invariant + subagent reconciliation.
 > - **pi-tasks** — pure, unit-testable reminder **cadence** via the `context` hook (transient, never persisted) + optional DAG + crash-safe widget render.
 
-## What's new in 0.4.0
+## What's new in 0.4.1
 
-- The typed `pi-subagents:task-started` / `task-settled` lifecycle is now the **authoritative** reconciliation path, tracked durably by task ID in `.pi/artifacts/todo/subagent-tasks.json` (atomic fsynced writes, inter-process lock, idempotent replay across restart, duplicate, and out-of-order delivery).
-- A TODO completes only when **both** the terminal and child-reported outcomes say `success`; blocked, partial, failed, reframed, or awaiting-decision work cannot complete it.
-- Native `tool_execution_start` / `tool_execution_end` is now a best-effort **compatibility fallback** (only the explicit terminal `done` phase is success).
-- Peer `@minhduydev/pi-core` moved to `^0.2.0`. See `CHANGELOG.md`.
+- Widen the `@minhduydev/pi-core` peer range to `>=0.2.0 <0.4.0`.
+- No runtime behavior changes: the task-lifecycle contract used by pi-todo is unchanged in the additive core 0.3 release.
+
+See `CHANGELOG.md`.
 
 ## Why markdown-first?
 
