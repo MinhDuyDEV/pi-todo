@@ -4,6 +4,16 @@ All notable changes to `@minhduydev/pi-todo` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+## [0.5.0] - 2026-07-29
+
+### Added
+- **Lossless archive**: `/todo archive [phase:ref]` and the `todo` tool `archive` op move completed/abandoned (terminal) phases out of `TODO.md` into a sibling `TODO.archive.md`. Phases move verbatim — nothing is dropped or duplicated — and the operation is idempotent. An active phase is refused so in-progress work is never silently archived. `store.getArchive()` / `store.archivePath` expose the archive.
+- **Additive view filters**: `/todo open`, `/todo archived`, and `/todo view <open|pending|in_progress|completed|abandoned|blocked|archived>` (and the `todo` tool `view` op `filter` param) narrow the rendered list without mutating the file. The default unfiltered view is byte-identical to prior behavior.
+- **Format migration**: `/todo migrate` and the `todo` tool `migrate` op upgrade a legacy/current `TODO.md` to the canonical form — adds the `<!-- pi-todo-format: 1 -->` preamble marker and rebuilds oh-my-pi `>`/`~` aliases to canonical `[/]`/`[-]`. Idempotent, status-preserving, and count/identity-preserving; non-migrated files keep round-tripping untouched. `formatVersionOf(md)` reads the declared version.
+- New exports: `migrateDoc`, `VIEW_FILTERS`/`ViewFilter`/`isViewFilter`/`filterStatuses`/`filterPhases` (model), `FORMAT_VERSION`/`FORMAT_MARKER`/`formatVersionOf` (markdown), `viewText` (tool), `archivePath`/`getArchive`/`archive`/`migrate`/`ArchiveResult` (store).
+
 ## [0.4.2] - 2026-07-29
 
 ### Fixed

@@ -29,9 +29,10 @@
  * No Pi coupling; `onDocChange` is wired by the integration layer.
  */
 import { createHash, randomUUID } from "node:crypto";
-import { readFileSync, statSync, watch, type FSWatcher, type Stats } from "node:fs";
+
+import { existsSync, readFileSync, statSync, watch, type FSWatcher, type Stats } from "node:fs";
 import { mkdir, open, rename, unlink } from "node:fs/promises";
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { lock } from "proper-lockfile";
 import { redactSecrets } from "@minhduydev/pi-core";
 
@@ -43,6 +44,7 @@ import {
   completeRef,
   completePhase,
   editItem,
+  migrateDoc,
   moveItem,
   normalizeDoc,
   parsePhaseRef,
@@ -62,6 +64,13 @@ import type { ItemStatus, TodoItem, TodoPhase } from "./types.js";
  */
 export type ApplyResult = { doc: TodoDoc; changed: boolean; before: TodoDoc };
 
+/** Result of {@link TodoStore.archive}: lossless move of terminal phases. */
+export type ArchiveResult = {
+  changed: boolean;
+  archived: string[];
+  reason?: string;
+};
+
 /**
  * Result of correlating a terminal delegated task with the canonical TODO.
  *
@@ -78,6 +87,38 @@ export type SubagentReconcileResult =
   | "unmatched";
 
 const EMPTY_DOC: TodoDoc = { preamble: [], phases: [] };
+
+function phaseArchiveKey(phase: TodoPhase): string {
+  return serializeMarkdown({ preamble: [], phases: [phase] });
+}
+
+/**
+ * Reconcile a retry after archive.md was committed but TODO.md removal failed.
+ * Exact phase blocks are the archive operation's idempotency identity; counts
+ * preserve legitimately repeated blocks within the same archive batch.
+ */
+function mergeArchivedPhases(
+  prior: readonly TodoPhase[],
+  selected: readonly TodoPhase[],
+): TodoPhase[] {
+  const available = new Map<string, number>();
+  for (const phase of prior) {
+    const key = phaseArchiveKey(phase);
+    available.set(key, (available.get(key) ?? 0) + 1);
+  }
+  const consumed = new Map<string, number>();
+  const additions: TodoPhase[] = [];
+  for (const phase of selected) {
+    const key = phaseArchiveKey(phase);
+    const used = consumed.get(key) ?? 0;
+    if (used < (available.get(key) ?? 0)) {
+      consumed.set(key, used + 1);
+    } else {
+      additions.push(phase);
+    }
+  }
+  return [...prior, ...additions];
+}
 
 /** A held lock older than this is assumed abandoned (crashed process). */
 const LOCK_STALE_MS = 10_000;
@@ -142,6 +183,15 @@ export class TodoStore {
 
   get filePath(): string {
     return this.path;
+  }
+
+  /**
+   * Path of the lossless archive file (`<base>.archive.md` next to TODO.md).
+   * Archived phases are moved here verbatim; the file is human-readable and
+   * git-diffable, and round-trips through parse/serialize like TODO.md itself.
+   */
+  get archivePath(): string {
+    return this.path.replace(/\.md$/i, ".archive.md");
   }
 
   /**
@@ -284,14 +334,10 @@ export class TodoStore {
     await this.durableReplace(md);
   }
 
-  private tempPath(): string {
-    return `${this.path}.tmp-${randomUUID()}`;
-  }
-
-  private async durableReplace(contents: string): Promise<void> {
-    const directory = dirname(this.path);
+  private async durableReplaceAt(targetPath: string, contents: string): Promise<void> {
+    const directory = dirname(targetPath);
     await mkdir(directory, { recursive: true });
-    const tmp = this.tempPath();
+    const tmp = `${targetPath}.tmp-${randomUUID()}`;
     let renamed = false;
     try {
       const handle = await open(tmp, "wx", 0o666);
@@ -301,12 +347,123 @@ export class TodoStore {
       } finally {
         await handle.close();
       }
-      await rename(tmp, this.path);
+      await rename(tmp, targetPath);
       renamed = true;
       await syncDirectory(directory);
     } finally {
       if (!renamed) await unlink(tmp).catch(() => undefined);
     }
+  }
+
+  private async durableReplace(contents: string): Promise<void> {
+    await this.durableReplaceAt(this.path, contents);
+  }
+
+  /**
+   * Read the archived phases from `archivePath`. Returns `[]` when no archive
+   * file exists yet. The archive is a normal TODO doc (phases only) and is
+   * never touched by normal mutations; `archive()` is the only writer.
+   */
+  getArchive(): TodoPhase[] {
+    if (!existsSync(this.archivePath)) return [];
+    return parseMarkdown(readFileSync(this.archivePath, "utf8")).phases;
+  }
+
+  /**
+   * Move completed/abandoned (terminal) phases out of the active TODO.md and
+   * into the lossless archive file. Lossless invariant: the ordered union of
+   * active phases ++ archive phases is unchanged — phases move verbatim, none
+   * are dropped or duplicated. Idempotent: archiving when nothing is terminal
+   * is a no-op (`changed: false`).
+   *
+   * With a `phaseRef` (`phase:<Title>`), archive just that phase — but only if
+   * it is terminal (`done`/`abandoned`); an active phase is refused so no
+   * in-progress work is ever silently archived.
+   */
+  async archive(phaseRef?: string): Promise<ArchiveResult> {
+    return this.enqueue(() =>
+      this.withFileLock(async () => {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const vBefore = this.versionKey();
+          const doc = this.readSync();
+          let selected: TodoPhase[];
+          if (phaseRef) {
+            const phaseTitle = parsePhaseRef(phaseRef);
+            if (phaseTitle == null) {
+              return { changed: false, archived: [], reason: `Not a phase ref: ${phaseRef}.` };
+            }
+            const phase = doc.phases.find((p) => p.title === phaseTitle);
+            if (!phase) return { changed: false, archived: [], reason: `Not found: ${phaseRef}.` };
+            if (phase.status === "active") {
+              return {
+                changed: false,
+                archived: [],
+                reason: `Phase “${phase.title}” is active; complete or abandon it before archiving.`,
+              };
+            }
+            selected = [phase];
+          } else {
+            selected = doc.phases.filter((p) => p.status !== "active");
+          }
+          if (selected.length === 0) {
+            return { changed: false, archived: [], reason: "No completed/abandoned phases to archive." };
+          }
+
+          const selectedSet = new Set(selected);
+          const remaining = doc.phases.filter((p) => !selectedSet.has(p));
+          const priorArchive = existsSync(this.archivePath)
+            ? parseMarkdown(readFileSync(this.archivePath, "utf8")).phases
+            : [];
+          const archivedPhases = mergeArchivedPhases(priorArchive, selected);
+
+          // CAS: if TODO.md changed between read and write, retry from disk.
+          if (this.versionKey() !== vBefore) continue;
+          // Archive first: a failure during the second replace can leave a
+          // recoverable duplicate, but can never remove the only durable copy.
+          await this.durableReplaceAt(
+            this.archivePath,
+            serializeMarkdown({ preamble: [], phases: archivedPhases }),
+          );
+          if (this.versionKey() !== vBefore) {
+            throw new Error(
+              "TODO.md changed while archiving; history is preserved in the archive, refresh and retry",
+            );
+          }
+          await this.durableReplace(
+            serializeMarkdown({ preamble: doc.preamble, phases: remaining }),
+          );
+          this.cache = { preamble: doc.preamble, phases: remaining };
+          this.onDocChange?.({ preamble: doc.preamble, phases: remaining });
+          return { changed: true, archived: selected.map((p) => p.title) };
+        }
+        throw new Error("TODO.md changed during archive; retry.");
+      }),
+    );
+  }
+
+  /**
+   * Upgrade the active TODO.md to the current canonical format (`migrateDoc`).
+   * Adds the format-version marker and rebuilds legacy marks canonically. The
+   * invariants (idempotent, status/count/identity-preserving) are documented on
+   * `migrateDoc`. Returns `changed: false` when the file is already canonical.
+   */
+  async migrate(): Promise<{ changed: boolean; reason?: string }> {
+    return this.enqueue(() =>
+      this.withFileLock(async () => {
+        for (let attempt = 0; attempt < 5; attempt++) {
+          const vBefore = this.versionKey();
+          const doc = this.readSync();
+          const before = serializeMarkdown(doc);
+          const after = serializeMarkdown(migrateDoc(doc));
+          if (after === before) return { changed: false };
+          if (this.versionKey() !== vBefore) continue;
+          await this.durableReplace(after);
+          this.cache = parseMarkdown(after);
+          return { changed: true };
+        }
+        throw new Error("TODO.md changed during migration; retry.");
+      }),
+    );
   }
 
   /**

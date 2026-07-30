@@ -9,6 +9,12 @@ A **markdown-first** structured todo layer for the [Pi coding agent](https://git
 > - **oh-my-pi** — phased `TodoItem` model + `phasesToMarkdown`/`markdownToPhases` round-trip + single-op tool + single-active-task invariant + subagent reconciliation.
 > - **pi-tasks** — pure, unit-testable reminder **cadence** via the `context` hook (transient, never persisted) + optional DAG + crash-safe widget render.
 
+## What's new in 0.5.0
+
+- **Lossless archive** — `/todo archive [phase:ref]` moves completed/abandoned phases to a sibling `TODO.archive.md`; `/todo archived` reads it back. Lossless and idempotent.
+- **Additive view filters** — `/todo open`, `/todo archived`, and `/todo view <filter>` narrow the view without changing the default; the unfiltered `/todo` view is byte-identical.
+- **Format migration** — `/todo migrate` upgrades legacy/current markdown to the canonical form with a version marker; idempotent and status-preserving.
+
 ## What's new in 0.4.2
 
 - Widen the `@minhduydev/pi-core` peer range to `>=0.2.0 <0.4.0`.
@@ -22,8 +28,10 @@ The file is always the truth a human can read, `grep`, `git diff`, and that surv
 
 ## Features
 
-- **`todo` LLM tool** — one strict op-discriminator tool: `view | add | start | done | drop | block | unblock | rm | move | edit | promote | deps`. Atomic writes (temp + rename) so a crash never leaves a half-edited file.
-- **`/todo` slash command** — same ops + `/todo edit` (opens `$EDITOR`) and `/todo refresh`.
+- **`todo` LLM tool** — one strict op-discriminator tool: `view | add | start | done | drop | block | unblock | rm | move | edit | promote | deps | archive | migrate`. Atomic writes (temp + rename) so a crash never leaves a half-edited file.
+- **`/todo` slash command** — same ops + `/todo edit` (opens `$EDITOR`) and `/todo refresh`. Additive view filters: `/todo open`, `/todo archived`, and `/todo view <open|pending|in_progress|completed|abandoned|blocked|archived>` narrow the rendered list without mutating the file; the default `/todo` view is unchanged.
+- **Lossless archive** — `/todo archive [phase:ref]` moves completed/abandoned (terminal) phases out of `TODO.md` into a sibling `TODO.archive.md` (human-readable, git-diffable, round-trips through parse/serialize). Phases move verbatim — nothing is dropped or duplicated — and the operation is idempotent. An active phase is refused so in-progress work is never silently archived. `/todo archived` (or `todo view filter=archived`) reads the archive back.
+- **Format migration** — `/todo migrate` upgrades a legacy/current `TODO.md` to the canonical form (version marker `<!-- pi-todo-format: 1 -->` in the preamble; oh-my-pi `>`/`~` aliases rebuilt to `[/]`/`[-]`; combined `status | updated` meta). Idempotent, status-preserving, and count/identity-preserving; non-migrated files keep round-tripping untouched.
 - **Reminder cadence** — a transient nudge via the `context` hook every N turns (shorter while an item is `in_progress`), suggesting the next step. Never persisted.
 - **Single-active-task invariant** — only one `in_progress` per phase; `done` auto-promotes the next pending.
 - **Subagent reconciliation** — the typed `pi-subagents:task-started`/`task-settled` event pair is authoritative and tracked durably by task ID in `.pi/artifacts/todo/subagent-tasks.json` across restart, duplicate delivery, and out-of-order delivery. The tracker uses atomic, fsynced writes and a small inter-process lock; a terminal event stays pending until the parent TODO mutation is acknowledged. A TODO completes only when both terminal and child-reported outcomes explicitly say `success`; blocked, partial, failed, reframed, or awaiting-decision work cannot complete it. A replay after a crash is recognized as already applied, while an unmatched description remains retryable instead of being silently acknowledged. Pi's native `tool_execution_start`/`tool_execution_end` remains a best-effort compatibility fallback for older task runtimes and only treats the explicit terminal `done` phase as success. Subagents never write `TODO.md` directly — the parent's `TodoStore` does, in the host process.
@@ -77,7 +85,7 @@ import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
 ```jsonc
 {
   "packages": [
-    // "npm:@minhduydev/pi-todo@0.4.2",                      // only when this exact release exists in your registry
+    // "npm:@minhduydev/pi-todo@0.5.0",                      // only when this exact release exists in your registry
     "git+https://github.com/minhduydev/pi-todo.git#<sha>",  // immutable source ref
     // "../pi-todo"                                          // local development path
   ],

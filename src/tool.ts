@@ -10,7 +10,7 @@ import { Type } from "typebox";
 import type { ExtensionAPI, ToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import type { TodoStore } from "./store.js";
-import { itemsOf, parsePhaseRef } from "./model.js";
+import { filterStatuses, itemsOf, isViewFilter, parsePhaseRef } from "./model.js";
 import type { ApplyResult } from "./store.js";
 import type { ItemStatus, PiTodoSettings, TodoPhase } from "./types.js";
 
@@ -40,7 +40,7 @@ export function buildTodoTool(
       "Append new phases only for distinct work sessions; reuse the active phase for the current task.",
     ],
     parameters: Type.Object({
-      op: Type.String({ description: "Operation: view|add|start|done|drop|block|unblock|rm|move|edit|promote|deps" }),
+      op: Type.String({ description: "Operation: view|add|start|done|drop|block|unblock|rm|move|edit|promote|deps|archive|migrate" }),
       phase: Type.Optional(Type.String({ description: "Phase title (for add/move/promote)" })),
       content: Type.Optional(Type.String({ description: "Item content (for add/edit)" })),
       ref: Type.Optional(
@@ -58,6 +58,12 @@ export function buildTodoTool(
           Type.Literal("abandoned"),
           Type.Literal("blocked"),
         ]),
+      ),
+      filter: Type.Optional(
+        Type.String({
+          description:
+            'View filter (for `view`): "open" (pending+in_progress+blocked) | "pending" | "in_progress" | "completed" | "abandoned" | "blocked" | "archived". Default is the full, unfiltered view.',
+        }),
       ),
       note: Type.Optional(Type.String({ description: "Blocker note (for block)" })),
       toPhase: Type.Optional(Type.String({ description: "Target phase title (for move)" })),
@@ -97,9 +103,27 @@ async function dispatch(store: TodoStore, settings: Required<PiTodoSettings>, p:
   const has = (k: string) => p[k] !== undefined && p[k] !== null && String(p[k]).trim() !== "";
   switch (op) {
     case "view": {
+      const filter = has("filter") ? String(p.filter).trim() : undefined;
+      if (filter === "archived") {
+        const archive = store.getArchive();
+        if (archive.length === 0) return "No archived phases.";
+        return viewText(archive);
+      }
       const doc = store.get();
       if (doc.phases.length === 0) return "No todos yet. Use `todo add <phase> <content>`.";
-      return viewText(doc.phases);
+      // Unknown filters fall back to the full view (filterStatuses → null).
+      return filter && isViewFilter(filter) && filter !== "archived"
+        ? viewText(doc.phases, filter)
+        : viewText(doc.phases);
+    }
+    case "archive": {
+      const r = await store.archive(has("ref") ? String(p.ref) : undefined);
+      if (!r.changed) return r.reason ? `✗ ${r.reason}` : "✗ Nothing to archive.";
+      return `✓ Archived ${r.archived.length} phase${r.archived.length === 1 ? "" : "s"}: ${r.archived.map((t) => `"${t}"`).join(", ")}.`;
+    }
+    case "migrate": {
+      const r = await store.migrate();
+      return r.changed ? "✓ Migrated to canonical form." : "✓ Already canonical — no changes.";
     }
     case "add": {
       if (!has("phase") || !has("content")) return "✗ `add` requires `phase` and `content`.";
@@ -211,13 +235,19 @@ function describeChanges(result: ApplyResult): string {
   return shown.join("\n");
 }
 
-function viewText(phases: TodoPhase[]): string {
+export function viewText(phases: TodoPhase[], filter?: string): string {
   const lines: string[] = [];
+  const statuses = filter ? filterStatuses(filter) : null;
   let n = 0;
   for (const phase of phases) {
-    const items = itemsOf(phase);
-    const done = items.filter((i) => i.status === "completed").length;
-    lines.push(`### ${phase.title} (status: ${phase.status}, ${done}/${items.length} done)`);
+    const all = itemsOf(phase);
+    const items = statuses ? all.filter((i) => statuses.includes(i.status)) : all;
+    // When filtering, hide phases that have no matching items; the unfiltered
+    // view (statuses === null) always shows every phase — byte-identical to
+    // the prior behavior pi-harness consumers rely on.
+    if (statuses && items.length === 0) continue;
+    const done = all.filter((i) => i.status === "completed").length;
+    lines.push(`### ${phase.title} (status: ${phase.status}, ${done}/${all.length} done)`);
     for (const it of items) {
       n++;
       const mark = it.status === "in_progress" ? "/" : it.status === "completed" ? "x" : it.status === "abandoned" ? "-" : it.status === "blocked" ? "!" : " ";

@@ -2,7 +2,12 @@
  * pi-todo — the `/todo` slash command + subcommands (mirrors the tool surface).
  *
  * `/todo`                  → show current list (notify)
+ * `/todo view [filter]`    → show current list; filter: open|pending|in_progress|completed|abandoned|blocked|archived
+ * `/todo open`             → show only non-terminal items (additive filter)
+ * `/todo archived`         → show the lossless archive
  * `/todo add <phase> <c>`  → add item
+ * `/todo archive [phase:ref]` → move completed/abandoned phases to the archive
+ * `/todo migrate`          → upgrade TODO.md to the canonical format
  * `/todo start <ref>` ...  → ops: start|done|drop|block|unblock|rm|move|edit|promote
  * `/todo edit`             → open $EDITOR on TODO.md, then re-read
  * `/todo refresh`          → re-read from disk
@@ -13,7 +18,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { readFileSync } from "node:fs";
 
 import type { TodoStore } from "./store.js";
-import { itemsOf } from "./model.js";
+import { itemsOf, filterStatuses, isViewFilter } from "./model.js";
 
 export function registerTodoCommand(
   pi: ExtensionAPI,
@@ -30,7 +35,36 @@ export function registerTodoCommand(
       onUse();
       try {
         if (!op || op === "view" || op === "list") {
-          ctx.ui.notify(viewMessage(store), "info");
+          const filter = op === "view" && rest[0] ? rest[0] : undefined;
+          ctx.ui.notify(
+            filter && isViewFilter(filter)
+              ? viewMessage(store, filter)
+              : viewMessage(store),
+            "info",
+          );
+          return;
+        }
+        if (op === "open" || op === "active") {
+          ctx.ui.notify(viewMessage(store, "open"), "info");
+          return;
+        }
+        if (op === "archived") {
+          ctx.ui.notify(viewMessage(store, "archived"), "info");
+          return;
+        }
+        if (op === "archive") {
+          const r = await store.archive(argStr.trim() || undefined);
+          ctx.ui.notify(
+            r.changed
+              ? `✓ Archived ${r.archived.length} phase${r.archived.length === 1 ? "" : "s"}: ${r.archived.map((t) => `"${t}"`).join(", ")}.`
+              : r.reason ? `✗ ${r.reason}` : "✗ Nothing to archive.",
+            r.changed ? "info" : "error",
+          );
+          return;
+        }
+        if (op === "migrate") {
+          const r = await store.migrate();
+          ctx.ui.notify(r.changed ? "✓ Migrated to canonical form." : "✓ Already canonical — no changes.", "info");
           return;
         }
         if (op === "edit") {
@@ -109,15 +143,27 @@ async function runOp(store: TodoStore, op: string, argStr: string): Promise<stri
   }
 }
 
-function viewMessage(store: TodoStore): string {
+function viewMessage(store: TodoStore, filter?: string): string {
+  if (filter === "archived") {
+    const archive = store.getArchive();
+    if (archive.length === 0) return "No archived phases.";
+    return viewPhases(archive, undefined);
+  }
   const doc = store.get();
   if (doc.phases.length === 0) return "No todos yet. /todo add <phase> <content>";
+  return viewPhases(doc.phases, filter);
+}
+
+function viewPhases(phases: ReturnType<TodoStore["get"]>["phases"], filter?: string): string {
+  const statuses = filter ? filterStatuses(filter) : null;
   const lines: string[] = ["Todos:"];
   let n = 0;
-  for (const phase of doc.phases) {
-    const items = itemsOf(phase);
-    const done = items.filter((i) => i.status === "completed").length;
-    lines.push(`  ${phase.title} (${done}/${items.length})`);
+  for (const phase of phases) {
+    const all = itemsOf(phase);
+    const items = statuses ? all.filter((i) => statuses.includes(i.status)) : all;
+    if (statuses && items.length === 0) continue;
+    const done = all.filter((i) => i.status === "completed").length;
+    lines.push(`  ${phase.title} (${done}/${all.length})`);
     for (const it of items) {
       n++;
       lines.push(`    ${n}. [${it.status}] ${it.content}`);

@@ -48,6 +48,33 @@ function isItemStatus(s: string): s is ItemStatus {
   return (ITEM_STATUS as readonly string[]).includes(s);
 }
 
+/**
+ * Format version. The current canonical form is version 1. The version is
+ * declared by a preamble marker line (`<!-- pi-todo-format: 1 -->`); normal
+ * parse/serialize never add or remove it, so existing files are untouched.
+ * `migrateDoc` is the only path that introduces the marker (see model.ts),
+ * which keeps `s(p(x)) === x` intact for files that have not been migrated.
+ */
+export const FORMAT_VERSION = 1;
+export const FORMAT_MARKER = `<!-- pi-todo-format: ${FORMAT_VERSION} -->`;
+const FORMAT_MARKER_RE = /^<!--\s*pi-todo-format:\s*(\d+)\s*-->$/;
+
+/**
+ * Read the declared format version from a markdown document's preamble.
+ * Returns `null` when no marker is present (i.e. a legacy or not-yet-migrated
+ * file). Only the preamble (lines before the first `### ` heading) is scanned,
+ * matching where `serializeMarkdown` emits the marker.
+ */
+export function formatVersionOf(md: string): number | null {
+  const lines = md.split("\n");
+  for (const line of lines) {
+    if (isHeading(line)) break;
+    const m = line.match(FORMAT_MARKER_RE);
+    if (m) return Number(m[1]);
+  }
+  return null;
+}
+
 /** Parse the canonical `.pi/artifacts/TODO.md` into a structured document. */
 export function parseMarkdown(md: string): TodoDoc {
   const lines = md.split(/\r?\n/);

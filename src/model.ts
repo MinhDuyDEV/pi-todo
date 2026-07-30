@@ -7,6 +7,8 @@
  * optional DAG validation) are enforced here.
  */
 import type { BlockEntry, ItemStatus, PhaseStatus, TodoItem, TodoPhase } from "./types.js";
+import { FORMAT_MARKER } from "./markdown.js";
+import type { TodoDoc } from "./markdown.js";
 
 /* ----------------------------- matching utils ----------------------------- */
 
@@ -576,4 +578,97 @@ function dfsCycle(g: Map<string, string[]>, start: string, node: string, path: s
   }
   path.pop();
   return false;
+}
+
+/**
+ * Additive view filters for long-lived TODO files. The default (no filter)
+ * view is unchanged; a filter narrows the rendered item set without mutating
+ * the file. `"archived"` is handled by the caller (it reads the archive store)
+ * and resolves to `null` here so renderers can branch on it.
+ */
+export const VIEW_FILTERS = [
+  "open",
+  "pending",
+  "in_progress",
+  "completed",
+  "abandoned",
+  "blocked",
+  "archived",
+] as const;
+export type ViewFilter = (typeof VIEW_FILTERS)[number];
+
+export function isViewFilter(s: unknown): s is ViewFilter {
+  return typeof s === "string" && (VIEW_FILTERS as readonly string[]).includes(s);
+}
+
+/**
+ * Map a view filter to the item statuses it shows. Returns `null` for
+ * `"archived"` (caller-handled) and for anything that is not a filter, so
+ * renderers treat `null` as "no narrowing".
+ */
+export function filterStatuses(filter: string): ItemStatus[] | null {
+  switch (filter) {
+    case "open":
+      return ["pending", "in_progress", "blocked"];
+    case "pending":
+      return ["pending"];
+    case "in_progress":
+      return ["in_progress"];
+    case "completed":
+      return ["completed"];
+    case "abandoned":
+      return ["abandoned"];
+    case "blocked":
+      return ["blocked"];
+    default:
+      return null;
+  }
+}
+
+/**
+ * Narrow phases to the items a filter shows. Returns phases whose item list is
+ * non-empty after filtering; phases with no matching items are dropped. Notes
+ * are excluded (the view only renders items). Pure: does not mutate input.
+ */
+export function filterPhases(phases: TodoPhase[], filter: string): TodoPhase[] {
+  const statuses = filterStatuses(filter);
+  if (!statuses) return phases;
+  const set = new Set(statuses);
+  const out: TodoPhase[] = [];
+  for (const p of phases) {
+    const body: BlockEntry[] = [];
+    for (const e of p.body) {
+      if (e.type === "item" && set.has(e.item.status)) body.push(e);
+    }
+    if (body.length > 0) out.push({ ...p, body });
+  }
+  return out;
+}
+
+/**
+ * Migrate a parsed document to the current canonical form (version
+ * `FORMAT_VERSION`). Explicit invariants:
+ *  - Idempotent: `migrateDoc(migrateDoc(doc))` is equal to `migrateDoc(doc)`
+ *    at the serialized level.
+ *  - Status-preserving: every phase and item status is unchanged.
+ *  - Count + identity preserving: phases, items, ids, and dependency refs are
+ *    preserved.
+ *  - Mark-normalizing: legacy oh-my-pi aliases (`>`/`~`) are rebuilt to
+ *    canonical marks (`[/]`/`[-]`).
+ * The format marker is added to the preamble exactly once; normal parse/
+ * serialize never add or remove it, so non-migrated files round-trip untouched.
+ */
+export function migrateDoc(doc: TodoDoc): TodoDoc {
+  const phases = doc.phases;
+  const hasMarker = doc.preamble.some((l) => l.trim() === FORMAT_MARKER);
+  const preamble = hasMarker ? doc.preamble : [FORMAT_MARKER, ...doc.preamble];
+  const canonicalPhases = phases.map((p) => ({
+    ...p,
+    body: p.body.map((e) =>
+      e.type === "item"
+        ? ({ type: "item", item: { ...e.item, raw: undefined } } as BlockEntry)
+        : e,
+    ),
+  }));
+  return { preamble, phases: canonicalPhases };
 }
