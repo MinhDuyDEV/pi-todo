@@ -9,6 +9,11 @@ A **markdown-first** structured todo layer for the [Pi coding agent](https://git
 > - **oh-my-pi** — phased `TodoItem` model + `phasesToMarkdown`/`markdownToPhases` round-trip + single-op tool + single-active-task invariant + subagent reconciliation.
 > - **pi-tasks** — pure, unit-testable reminder **cadence** via the `context` hook (transient, never persisted) + optional DAG + crash-safe widget render.
 
+## What's new in 0.6.0
+
+- **Trusted auto-archive** — terminal phases move to the same lossless archive automatically after writes in a Pi-trusted project (`autoArchive: true` by default). Untrusted projects are never mutated on load; manual archive remains available.
+- **Bounded replay and Pi 0.84** — replay requests enforce a hard result cap, and the package is tested against Pi 0.84 / TypeBox 1.3.7.
+
 ## What's new in 0.5.0
 
 - **Lossless archive** — `/todo archive [phase:ref]` moves completed/abandoned phases to a sibling `TODO.archive.md`; `/todo archived` reads it back. Lossless and idempotent.
@@ -76,6 +81,7 @@ import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
 | `widgetMaxLines` | `10` | Hard cap on total widget lines — a data-independent safety net so the widget can never crush the editor |
 | `widgetCollapsedPhases` | `3` | Max non-focus phases shown as one-line collapsed summaries |
 | `reconcileSubagents` | `true` | Auto-reconcile on subagent settle |
+| `autoArchive` | `true` | Losslessly archive terminal phases after writes, only while the project is Pi-trusted |
 | `dependencies` | `false` | Enable opt-in `blocks`/`blockedBy` DAG |
 
 ## Install (pin into a Pi project)
@@ -85,7 +91,7 @@ import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
 ```jsonc
 {
   "packages": [
-    // "npm:@minhduydev/pi-todo@0.5.0",                      // only when this exact release exists in your registry
+    // "npm:@minhduydev/pi-todo@0.6.0",                      // only when this exact release exists in your registry
     "git+https://github.com/minhduydev/pi-todo.git#<sha>",  // immutable source ref
     // "../pi-todo"                                          // local development path
   ],
@@ -97,12 +103,7 @@ import { parseMarkdown } from "@minhduydev/pi-todo/markdown";
 
 Peer deps (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, `typebox`, `@minhduydev/pi-core`) are provided by the host Pi at runtime. The manifest declares `"pi": { "extensions": ["./dist/index.js"] }`.
 
-## Coexistence with the pi-harness TUI todo surface
-
-The pi-harness TUI extension can render an `amp-todos` widget and inject an active-TODO reminder from the same `.pi/artifacts/TODO.md`. Both are controlled together by `piTui.todosWidget`; the canonical harness settings set it to `false` when `pi-todo` owns this surface.
-
-- **Widget**: `pi-todo`'s widget is **bounded** — one focused phase expanded, the rest collapsed to a line each, hard-capped by `widgetMaxLines`; fully-done phases are hidden so finished work never wastes a line. To make it the sole below-editor todo widget, disable the built-in `amp-todos` via `piTui.todosWidget: false` in `.pi/settings.json` (pi-harness). Alternatively set `pi-todo.widget: false` and keep `amp-todos`.
-- **Cadence**: setting `piTui.todosWidget: false` also disables the TUI's active-TODO prompt injection, leaving `pi-todo.reminderTurns` as the sole reminder cadence.
+The package owns its bounded widget and reminder cadence directly; no pi-harness TUI compatibility layer is required.
 
 ## Ops vs the `artifact-format` append-only rule
 

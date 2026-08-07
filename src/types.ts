@@ -130,6 +130,8 @@ export interface PiTodoSettings {
   widgetCollapsedPhases?: number;
   /** Enable auto-reconciliation on subagent settle. Default true. */
   reconcileSubagents?: boolean;
+  /** Losslessly archive terminal phases after trusted-project writes. Default true. */
+  autoArchive?: boolean;
   /** Enable the optional opt-in dependency/DAG features. Default false. */
   dependencies?: boolean;
 }
@@ -146,6 +148,7 @@ export const DEFAULT_SETTINGS: Required<PiTodoSettings> = {
   widgetMaxLines: 10,
   widgetCollapsedPhases: 3,
   reconcileSubagents: true,
+  autoArchive: true,
   dependencies: false,
 };
 

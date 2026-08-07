@@ -67,9 +67,11 @@ test("e2e: tool add → start → done → widget reflects", async () => {
 
 test("e2e: unknown op returns error text, does not throw", async () => {
   const { store } = setup(DOC);
-  const tool = buildTodoTool(store, S, () => {});
+  let flushes = 0;
+  const tool = buildTodoTool(store, S, () => {}, undefined, async () => { flushes += 1; });
   const r = await tool.execute("id", { op: "bogus" }, undefined as never, undefined as never, undefined as never);
   assert.ok(textOf(r as ToolOut).includes("✗"));
+  assert.equal(flushes, 1, "post-use maintenance runs even for rejected operations");
 });
 
 test("e2e: add missing phase+content returns guidance, no mutation", async () => {

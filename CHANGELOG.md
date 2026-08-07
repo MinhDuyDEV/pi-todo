@@ -6,6 +6,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-07
+
+### Added
+- Trusted projects now coalesce terminal writes into the existing lossless archive path by default (`autoArchive: true`). Shutdown and command/tool completion flush scheduled work so archiving does not race process exit.
+
+### Security
+- Untrusted projects never auto-mutate TODO files, including during startup refresh. Manual archive remains explicit.
+
+### Changed
+- Public replay queries enforce a hard `1..1000` result limit instead of accepting unbounded caller input.
+- Move the tested Pi host and peer contract to `0.84.x` with TypeBox `1.3.7`.
+
 ## [0.5.0] - 2026-07-29
 
 ### Added

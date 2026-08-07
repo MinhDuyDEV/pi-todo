@@ -51,3 +51,14 @@ test("public replay port returns prefix-bound usage-complete lifecycle events", 
     await rm(projectDirectory, { recursive: true, force: true });
   }
 });
+
+test("public replay port rejects unbounded page sizes", async () => {
+  const projectDirectory = await mkdtemp(join(tmpdir(), "pi-todo-replay-limit-"));
+  try {
+    const port = createTodoReplayPort({ projectDirectory });
+    await assert.rejects(port.replay(undefined, 1_001), /limit.*bounds/iu);
+    await assert.rejects(port.replay(undefined, 0), /limit.*bounds/iu);
+  } finally {
+    await rm(projectDirectory, { recursive: true, force: true });
+  }
+});

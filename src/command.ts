@@ -25,6 +25,7 @@ export function registerTodoCommand(
   store: TodoStore,
   _settings: unknown,
   onUse: () => void,
+  afterUse?: () => Promise<void>,
 ): void {
   pi.registerCommand("todo", {
     description: "Manage the markdown todo list (.pi/artifacts/TODO.md).",
@@ -104,6 +105,8 @@ export function registerTodoCommand(
         ctx.ui.notify(`✗ Unknown op. Ops: ${OPS.join("|")} | edit | refresh | view`, "error");
       } catch (e) {
         ctx.ui.notify(`✗ ${e instanceof Error ? e.message : String(e)}`, "error");
+      } finally {
+        await afterUse?.();
       }
     },
   });

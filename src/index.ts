@@ -32,6 +32,7 @@ import {
   parseUsageBinding,
   type UsageBinding,
 } from "./lifecycle-journal.js";
+import { AutoArchiveScheduler } from "./auto-archive.js";
 
 export default function setup(pi: ExtensionAPI): void {
   // Two pi-core copies with different canonicalization rules would recreate
@@ -94,7 +95,24 @@ export default function setup(pi: ExtensionAPI): void {
     },
   };
 
-  const store = new TodoStore(storePath, () => cadence.onStatusChange(), async (prev, next) => {
+  let store: TodoStore;
+  const autoArchiver = new AutoArchiveScheduler(
+    () => trusted && settings.autoArchive,
+    () => store.archive(),
+    (error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      const message = `pi-todo: automatic archive failed; terminal phases remain in TODO.md (${detail})`;
+      try {
+        void Promise.resolve(
+          pi.events.emit("pi-todo:v1:auto-archive-error", { version: 1, detail }),
+        ).catch(() => undefined);
+      } catch {
+        // The warning below remains available if the event bus fails.
+      }
+      console.warn(message);
+    },
+  );
+  store = new TodoStore(storePath, () => cadence.onStatusChange(), async (prev, next) => {
     const completed: Record<string, unknown>[] = [];
     emitLifecycleEvents(
       (channel, data) => {
@@ -105,6 +123,7 @@ export default function setup(pi: ExtensionAPI): void {
       prev,
       next,
     );
+    autoArchiver.schedule(next.phases);
     if (!trusted || currentUsage.length === 0 || completed.length === 0) return;
 
     const prior = await lifecycleJournal.recover();
@@ -155,8 +174,15 @@ export default function setup(pi: ExtensionAPI): void {
     settings,
     () => cadence.onTodoToolCall(),
     usageScope,
+    () => autoArchiver.flush(),
   ));
-  registerTodoCommand(pi, store, settings, () => cadence.onTodoToolCall());
+  registerTodoCommand(
+    pi,
+    store,
+    settings,
+    () => cadence.onTodoToolCall(),
+    () => autoArchiver.flush(),
+  );
 
   // --- subagent reconciliation + matched lighting -------------------------
   const reconciler: Reconciler = {
@@ -240,11 +266,12 @@ export default function setup(pi: ExtensionAPI): void {
     // cross-package trust ledger. The todo tool itself keeps working locally.
     // Fail closed if the host does not expose a trust verdict.
     trusted = typeof ctx.isProjectTrusted === "function" ? ctx.isProjectTrusted() : false;
-    store.refresh();
+    const refreshed = store.refresh();
     // Ensure the watcher is running (idempotent) — it may have been stopped.
     store.startWatch();
     registerWidget(ctx);
     maybeStartSpinner();
+    autoArchiver.schedule(refreshed.phases);
   });
   pi.on("turn_end", () => {
     if (widgetRegistered) {
@@ -253,7 +280,7 @@ export default function setup(pi: ExtensionAPI): void {
     }
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", async () => {
     // session_shutdown fires on /clear/resume/fork/reload, not just exit.
     // try/finally so every cleanup runs even if one throws. Do NOT stop the
     // file watcher (it must survive session switches); do NOT call any pi.on
@@ -265,6 +292,7 @@ export default function setup(pi: ExtensionAPI): void {
         clearInterval(spinnerTimer);
         spinnerTimer = null;
       }
+      await autoArchiver.flush();
     }
   });
 }

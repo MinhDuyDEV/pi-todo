@@ -173,6 +173,23 @@ test("real-session load: explicit usage IDs populate the durable lifecycle repla
   });
 });
 
+test("real-session load: trusted writes auto-archive a terminal phase losslessly", async () => {
+  await withTempProject(async (dir) => {
+    const pi = fakePi();
+    (await import("../src/index.js")).default(pi as never);
+    pi.dispatch("session_start", {}, fakeCtx(false, true) as never);
+    const tool = pi.tool("todo")!;
+    await tool.execute("id", { op: "add", phase: "Archive me", content: "finished work" }, undefined, undefined, undefined);
+    await tool.execute("id", { op: "done", ref: "phase:Archive me" }, undefined, undefined, undefined);
+
+    const active = readFileSync(join(dir, ".pi", "artifacts", "TODO.md"), "utf8");
+    const archived = readFileSync(join(dir, ".pi", "artifacts", "TODO.archive.md"), "utf8");
+    assert.ok(!active.includes("Archive me"));
+    assert.ok(archived.includes("Archive me"));
+    assert.ok(archived.includes("finished work"));
+  });
+});
+
 test("real-session load: an UNTRUSTED project writes no usage bindings to the ledger", async () => {
   await withTempProject(async (dir) => {
     const pi = fakePi();
@@ -206,6 +223,10 @@ test("real-session load: an UNTRUSTED project writes no usage bindings to the le
       usage_ids: [tagged("a")],
     }, undefined, undefined, undefined);
     assert.ok((done as { content: { text: string }[] }).content[0]!.text.includes("✓"));
+    assert.ok(
+      readFileSync(join(dir, ".pi", "artifacts", "TODO.md"), "utf8").includes("Linked"),
+      "untrusted projects must not be auto-mutated into the archive",
+    );
     const page = await createTodoReplayPort({ projectDirectory: dir }).replay(undefined, 10);
     assert.equal(page.events.length, 0, "no ledger events for an untrusted project");
   });

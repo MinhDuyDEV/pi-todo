@@ -24,6 +24,7 @@ export function buildTodoTool(
   settings: Required<PiTodoSettings>,
   onUse: () => void,
   usageScope?: TodoUsageScope,
+  afterUse?: () => Promise<void>,
 ): ToolDefinition {
   return {
     name: "todo",
@@ -86,6 +87,7 @@ export function buildTodoTool(
           const r = await dispatch(store, settings, params as Params);
           return textResult(r);
         } finally {
+          await afterUse?.();
           usageScope?.end();
         }
       } catch (e) {

@@ -87,6 +87,9 @@ export function createTodoReplayPort(input: { projectDirectory: string }): {
   );
   return {
     async replay(after, limit = 64) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+        throw new Error("TODO replay limit must be within bounds 1..1000");
+      }
       const page = await journal.replay(after ? internalCursor(after) : undefined, limit);
       return {
         events: page.records.map(eventFor),

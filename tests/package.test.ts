@@ -23,19 +23,19 @@ async function readme(): Promise<string> {
 }
 
 /**
- * The whole `pi-*` set must resolve ONE Pi host. An open `>=0.81.1` on three
- * packages and a `^0.81.1` on a fourth makes Pi 0.82 install cleanly for three
+ * The whole `pi-*` set must resolve ONE Pi host. An open host range on three
+ * packages and a narrower range on a fourth can make an unverified Pi install
  * and conflict on the fourth, so the range is pinned to a single minor here and
  * in every sibling package.
  */
 test("Pi peer and development ranges pin one host minor across the pi-* set", async () => {
   const pkg = await manifest();
-  assert.equal(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.81.1 <0.82.0");
-  assert.equal(pkg.peerDependencies?.["@earendil-works/pi-tui"], ">=0.81.1 <0.82.0");
-  assert.equal(pkg.peerDependencies?.typebox, "1.1.38");
-  assert.equal(pkg.devDependencies?.["@earendil-works/pi-coding-agent"], "0.81.1");
-  assert.equal(pkg.devDependencies?.["@earendil-works/pi-tui"], "0.81.1");
-  assert.equal(pkg.devDependencies?.typebox, "1.1.38");
+  assert.equal(pkg.peerDependencies?.["@earendil-works/pi-coding-agent"], ">=0.84.0 <0.85.0");
+  assert.equal(pkg.peerDependencies?.["@earendil-works/pi-tui"], ">=0.84.0 <0.85.0");
+  assert.equal(pkg.peerDependencies?.typebox, "1.3.7");
+  assert.equal(pkg.devDependencies?.["@earendil-works/pi-coding-agent"], "0.84.0");
+  assert.equal(pkg.devDependencies?.["@earendil-works/pi-tui"], "0.84.0");
+  assert.equal(pkg.devDependencies?.typebox, "1.3.7");
   assert.equal(pkg.engines?.node, ">=22.19.0", "engines must match the rest of the pi-* set");
 });
 
@@ -73,6 +73,8 @@ test("README install/default claims stay aligned with the published manifest", a
   assert.match(docs, /ships compiled ESM[\s\S]*`dist`/);
   assert.match(docs, /extension entry is `\.\/dist\/index\.js`/);
   assert.match(docs, /\| `widget` \| `true` \|/);
+  assert.match(docs, /\| `autoArchive` \| `true` \|/);
+  assert.match(docs, /only while the project is Pi-trusted/);
   assert.match(docs, new RegExp(`npm:@minhduydev/pi-todo@${pkg.version.replaceAll(".", "\\.")}`));
   assert.match(docs, /subagent-tasks\.json/);
   assert.match(docs, /unmatched description remains retryable/);
